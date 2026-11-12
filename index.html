@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#7cc95a">
+<title>Barnyard Parade</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐷</text></svg>">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button id="btn-settings" class="round" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8.9 4.9-1.9.3a7 7 0 0 1-.8 1.9l1.1 1.6-1.6 1.6-1.6-1.1a7 7 0 0 1-1.9.8l-.3 1.9h-2.3l-.3-1.9a7 7 0 0 1-1.9-.8l-1.6 1.1-1.6-1.6 1.1-1.6a7 7 0 0 1-.8-1.9l-1.9-.3v-2.3l1.9-.3a7 7 0 0 1 .8-1.9L4.3 6.6l1.6-1.6 1.6 1.1a7 7 0 0 1 1.9-.8l.3-1.9h2.3l.3 1.9a7 7 0 0 1 1.9.8l1.6-1.1 1.6 1.6-1.1 1.6a7 7 0 0 1 .8 1.9l1.9.3z" fill="#fff"/></svg></button>
+    <div id="banner"><span id="lvl-text">Level 1</span></div>
+    <div id="cap" title="Animals on the path"><span id="cap-text">0/12</span></div>
+    <button id="btn-restart" class="round" aria-label="Restart level"><svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z" fill="#fff"/></svg></button>
+  </header>
+  <div id="stage"><canvas id="board"></canvas><div id="hint" class="hidden"></div></div>
+  <footer id="bottom">
+    <button class="pw" data-pw="undo" aria-label="Undo"><svg viewBox="0 0 48 48"><path d="M24 10a14 14 0 1 1-13.6 17.3" fill="none" stroke="#2f8fe6" stroke-width="6" stroke-linecap="round"/><path d="M6 13l10 1-6 8z" fill="#2f8fe6"/></svg><span class="cnt">0</span><span class="lbl">Undo</span></button>
+    <button class="pw" data-pw="swap" aria-label="Swap"><svg viewBox="0 0 48 48"><path d="M8 16h26l-6-6M40 32H14l6 6" fill="none" stroke="#c04ad8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="cnt">0</span><span class="lbl">Swap</span></button>
+    <button class="pw" data-pw="plus2" aria-label="Plus two path space"><svg viewBox="0 0 48 48"><path d="M6 14h30l8 10-8 10H6z" fill="#ffb627" stroke="#c87a00" stroke-width="2.5" stroke-linejoin="round"/><text x="21" y="31" text-anchor="middle" font-size="17" font-weight="900" fill="#fff" font-family="system-ui,sans-serif">+2</text></svg><span class="cnt">0</span><span class="lbl">Space</span></button>
+    <button class="pw" data-pw="magnet" aria-label="Magnet"><svg viewBox="0 0 48 48"><path d="M10 8v16a14 14 0 0 0 28 0V8h-9v16a5 5 0 0 1-10 0V8z" fill="#ef4150"/><path d="M10 8h9v7h-9zM29 8h9v7h-9z" fill="#dfe6ee"/></svg><span class="cnt">0</span><span class="lbl">Magnet</span></button>
+  </footer>
+</div>
+
+<div id="swapbar" class="hidden"><span>Tap two animal pairs to swap them</span><button id="swap-cancel">Cancel</button></div>
+<div id="toast" class="hidden"></div>
+
+<div id="modal" class="hidden"><div class="panel"><h2 id="m-title"></h2><div id="m-body"></div><div id="m-buttons"></div></div></div>
+
+<div id="map" class="hidden">
+  <div id="map-head"><button id="map-close" class="round" aria-label="Back">✕</button><h2 data-name></h2><div id="map-bank"></div></div>
+  <div id="map-scroll"><div id="map-nodes"></div></div>
+  <div id="map-foot"><button id="map-play" class="big">Play</button></div>
+</div>
+
+<script src="config.js?v=1"></script>
+<script src="game.js?v=1"></script>
+<script src="art.js?v=1"></script>
+<script src="audio.js?v=1"></script>
+<script src="main.js?v=1"></script>
+</body>
+</html>

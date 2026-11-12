@@ -1,0 +1,10 @@
+{
+  "name": "barnyard-parade",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A cozy farm-animal color-sort puzzle. Static HTML/JS, no build step.",
+  "scripts": {
+    "test": "node tests/unit.js && node tests/sim.js 60",
+    "e2e": "node tests/e2e.js"
+  }
+}

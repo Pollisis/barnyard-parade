@@ -69,6 +69,12 @@
     lose() { const t = now(); [392, 349, 311].forEach((f, i) => tone({ type: 'triangle', f0: f, t: t + i * 0.18, dur: 0.3, vol: 0.2 })); },
     power() { const t = now(); [660, 880, 1320].forEach((f, i) => tone({ type: 'sine', f0: f, t: t + i * 0.05, dur: 0.15, vol: 0.18 })); },
     click() { tone({ type: 'sine', f0: 900, dur: 0.04, vol: 0.12 }); },
+    step(n) { const v = 0.05 + Math.min(8, n) * 0.012; noise({ dur: 0.05, fq: 260 + Math.random() * 120, q: 1.5, vol: v, filter: 'lowpass' }); tone({ type: 'sine', f0: 110 + Math.random() * 30, f1: 70, dur: 0.06, vol: v * 0.8 }); },
+    park() { tone({ type: 'sine', f0: 620, f1: 980, dur: 0.08, vol: 0.12 }); },
+    chime() { const t = now(); [1047, 1319, 1568, 2093].forEach((f, i) => { tone({ type: 'sine', f0: f, t: t + i * 0.09, dur: 0.6, vol: 0.18 }); tone({ type: 'triangle', f0: f * 2, t: t + i * 0.09, dur: 0.25, vol: 0.04 }); }); },
+    fence() { const t = now(); noise({ t: t + 0.25, dur: 0.12, fq: 500, q: 1, vol: 0.25, filter: 'lowpass' }); tone({ type: 'triangle', f0: 220, f1: 140, t: t + 0.25, dur: 0.12, vol: 0.2 }); },
+    zoom() { tone({ type: 'sawtooth', f0: 300, f1: 1200, dur: 0.5, vol: 0.08, filter: 'lowpass', fq: 2000 }); },
+    magnet() { tone({ type: 'sine', f0: 200, f1: 900, dur: 0.6, vol: 0.2, vib: 18, vibDepth: 40 }); },
   };
 
   // ---------- cheerful original music loop (C major, ~112 bpm, 8 bars) ----------

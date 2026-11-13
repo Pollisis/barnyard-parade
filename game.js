@@ -1,4 +1,4 @@
-// Barnyard Parade: pure game logic (rules, level generator, solver, bot). Runs in the browser and in Node.
+// Barnyard Parade v2: pure game logic (loop track, barns, parking, level generator, solver). Browser + Node.
 (function (root, factory) {
   const cfg = (typeof module === 'object' && module.exports) ? require('./config.js') : root.BP_CONFIG;
   const api = factory(cfg);
@@ -7,6 +7,9 @@
   'use strict';
   const C = CFGROOT.CONFIG;
   const KINDS = ['pig', 'chick', 'sheep', 'frog', 'duck', 'cow', 'bunny', 'hen', 'blacksheep', 'goat'];
+  const CAP = C.BARN_CAP;
+  let SW = [6, 4, 0.6, 0.25, 0.8, 0];
+  function setSolverWeights(w) { SW = w; }
 
   // ---------- helpers ----------
   function mulberry32(a) {
@@ -17,400 +20,358 @@
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
-  const seedFor = (level, attempt) => (Math.imul(level, 2654435761) ^ Math.imul(attempt + 1, 40503) ^ 0x9e3779b9) >>> 0;
+  const seedFor = (level, attempt) => (Math.imul(level, 2654435761) ^ Math.imul(attempt + 7, 40503) ^ 0x5bd1e995) >>> 0;
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
   const lerp = (a, b, t) => a + (b - a) * t;
   const ri = (r, a, b) => a + Math.floor(r() * (b - a + 1));
   function shuffle(r, arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   const clone = (o) => JSON.parse(JSON.stringify(o));
+  const mod = (a, n) => ((a % n) + n) % n;
 
   function levelParams(level) {
     const t = (from, to) => clamp01((level - from) / Math.max(1, to - from));
     return {
       kinds: Math.min(C.KINDS_MAX, KINDS.length, C.KINDS_START + Math.floor((level - 1) / C.KINDS_EVERY)),
-      setsMax: Math.round(lerp(C.SETS_MAX_START, C.SETS_MAX_END, t(1, C.SETS_RAMP_LEVEL))),
-      hidden: level < C.HIDDEN_FROM_LEVEL ? 0 : lerp(C.HIDDEN_START, C.HIDDEN_MAX, t(C.HIDDEN_FROM_LEVEL, C.HIDDEN_RAMP_LEVEL)),
-      glass: level < C.GLASS_FROM_LEVEL ? 0 : Math.min(C.GLASS_MAX, 1 + Math.floor((level - C.GLASS_FROM_LEVEL) / C.GLASS_EVERY)),
-      mix: lerp(C.MIX_START, C.MIX_MAX, t(1, C.MIX_RAMP_LEVEL)),
-      crateLen: Math.round(lerp(C.CRATE_LEN_START, C.CRATE_LEN_MAX, t(1, C.CRATE_LEN_RAMP_LEVEL))),
-      botMin: lerp(C.BOT_MIN_WINRATE_START, C.BOT_MIN_WINRATE_END, t(1, C.BOT_RAMP_LEVEL)),
+      empty: level < C.EMPTY_DROP_LEVEL ? C.EMPTY_START : C.EMPTY_END,
+      merge: lerp(C.MERGE_START, C.MERGE_END, t(1, C.MERGE_RAMP)),
+      mystery: level < C.MYSTERY_FROM ? 0 : lerp(C.MYSTERY_START, C.MYSTERY_MAX, t(C.MYSTERY_FROM, C.MYSTERY_RAMP)),
+      presets: level < C.PRESET_FROM ? 0 : Math.min(C.PRESET_MAX, 1 + Math.floor((level - C.PRESET_FROM) / C.PRESET_EVERY)),
     };
   }
 
-  // ---------- path processing (shared by the game, generator and solver) ----------
-  // path: array of {k,...}; glass: array of {kind, need, crate}. Mutates both. Front = path[0].
-  function processPath(path, glass, events) {
-    for (;;) {
-      if (!path.length) return;
-      const f = path[0];
-      const g = glass.find((x) => x && x.need > 0 && x.kind === f.k);
-      if (g) {
-        path.shift(); g.need--;
-        if (events) { events.push({ type: 'glass', id: f.id, k: f.k, crate: g.crate, left: g.need }); if (g.need === 0) events.push({ type: 'shatter', crate: g.crate }); }
-        continue;
-      }
-      let kind = null;
-      if (countKind(path, f.k) >= C.SET_SIZE) kind = f.k;
-      else if (C.CLEAR_ANYWHERE) { for (const a of path) if (countKind(path, a.k) >= C.SET_SIZE) { kind = a.k; break; } }
-      if (kind == null) return;
-      const ids = []; let n = 0;
-      for (let i = 0; i < path.length && n < C.SET_SIZE;) { if (path[i].k === kind) { ids.push(path[i].id); path.splice(i, 1); n++; } else i++; }
-      if (events) events.push({ type: 'clear', k: kind, ids });
+  // ---------- board geometry (units = one animal cell) ----------
+  // Barns stand above and below a rounded rectangular loop. Top barns open downward onto the top lane,
+  // bottom barns open upward onto the bottom lane. Extra (power-up) barns sit inside the loop.
+  const BARN_W = 2.3, BARN_H = CAP / 2 + 0.35, STEP = 2.45, LANE = 1.1, MID = 2.9, RC = 0.9;
+  function makeLayout(nBarns) {
+    const nt = Math.ceil(nBarns / 2), nb = nBarns - nt;
+    const per = Math.max(nt, nb);
+    const W = per * STEP + 0.6;
+    const top0 = 0.3, yT = top0 + BARN_H + LANE / 2, yB = yT + LANE + MID, H = yB + LANE / 2 + BARN_H + 0.3;
+    const xl = 0.55, xr = W - 0.55;
+    // loop polyline, clockwise: top lane left->right, right side down, bottom lane right->left, left side up
+    const pts = [];
+    const arc = (cx, cy, a0, a1) => { for (let i = 0; i <= 8; i++) { const a = a0 + (a1 - a0) * i / 8; pts.push({ x: cx + Math.cos(a) * RC, y: cy + Math.sin(a) * RC }); } };
+    pts.push({ x: xl + RC, y: yT });
+    arc(xr - RC, yT + RC, -Math.PI / 2, 0);
+    arc(xr - RC, yB - RC, 0, Math.PI / 2);
+    arc(xl + RC, yB - RC, Math.PI / 2, Math.PI);
+    arc(xl + RC, yT + RC, Math.PI, Math.PI * 1.5);
+    const segs = []; let L = 0;
+    for (let i = 0; i < pts.length - 1; i++) { const a = pts[i], b = pts[i + 1]; const len = Math.hypot(b.x - a.x, b.y - a.y); if (len < 1e-9) continue; segs.push({ a, b, len, s0: L }); L += len; }
+    const project = (x, y) => { let best = 1e9, bs = 0; for (const g of segs) { const t = Math.max(0, Math.min(1, ((x - g.a.x) * (g.b.x - g.a.x) + (y - g.a.y) * (g.b.y - g.a.y)) / (g.len * g.len))); const px = g.a.x + (g.b.x - g.a.x) * t, py = g.a.y + (g.b.y - g.a.y) * t; const d = Math.hypot(px - x, py - y); if (d < best) { best = d; bs = g.s0 + g.len * t; } } return bs; };
+    const barns = [];
+    const offT = (W - nt * STEP) / 2 + (STEP - BARN_W) / 2, offB = (W - nb * STEP) / 2 + (STEP - BARN_W) / 2;
+    for (let i = 0; i < nt; i++) { const x = offT + i * STEP; barns.push({ x, y: top0, w: BARN_W, h: BARN_H, side: 'top', dock: project(x + BARN_W / 2, yT) }); }
+    for (let i = nb - 1; i >= 0; i--) { const x = offB + i * STEP; barns.push({ x, y: yB + LANE / 2, w: BARN_W, h: BARN_H, side: 'bottom', dock: project(x + BARN_W / 2, yB) }); }
+    // barns listed in loop order: top left->right, then bottom right->left
+    const temps = [];
+    const th = C.TEMP_BARN_CAP / 2 + 0.35;
+    for (let i = 0; i < C.TEMP_BARN_MAX; i++) { const x = xl + 1.4 + i * STEP; temps.push({ x, y: yT + LANE / 2 + 0.12, w: BARN_W, h: th, side: 'bottom', dock: project(x + BARN_W / 2, yT) + 0.02 }); }
+    const sign = { x: xr - 2.2, y: (yT + yB) / 2 };
+    return { W, H, yT, yB, xl, xr, pts, segs, L, barns, temps, sign };
+  }
+  function pointAt(lay, s) {
+    s = mod(s, lay.L);
+    let lo = 0, hi = lay.segs.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (lay.segs[m].s0 <= s) lo = m; else hi = m - 1; }
+    const g = lay.segs[lo]; const t = (s - g.s0) / g.len;
+    return { x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t, ang: Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) };
+  }
+
+  // ---------- rules on a compact board (used by generator, solver and tests) ----------
+  // board = { cells: [[k,...] bottom->top], cap: [16..], preset: [k|null], n } ; barns are in loop order
+  function topRun(cells) { const n = cells.length; if (!n) return { k: -1, run: 0 }; const k = cells[n - 1]; let r = 0; for (let i = n - 1; i >= 0 && cells[i] === k; i--) r++; return { k, run: r }; }
+  function canPark(board, b, k) { const c = board.cells[b]; return c.length < board.cap[b] && (board.preset[b] == null || board.preset[b] === k) && (!c.length || c[c.length - 1] === k); }
+  function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP) return false; for (const x of cells) if (x !== cells[0]) return false; return true; }
+  // One tap on the compact board. circ = {kind: count} of animals left circling (nowhere to park yet).
+  // Only barn X changes when you tap it, so the result is the same however the parade is spaced, as long as
+  // the tap does not make an empty barn wanted by two different colors (the solver skips those ambiguous taps).
+  function tapBoard(board, circ, X, trackCap) {
+    trackCap = trackCap || C.TRACK_CAPACITY;
+    let tot = 0; for (const k in circ) tot += circ[k];
+    const { k: d, run } = topRun(board.cells[X]);
+    if (!run) return null;
+    const n = Math.min(run, trackCap - tot);
+    if (n <= 0) return null;
+    const nb = { cells: board.cells.map((c) => c.slice()), cap: board.cap, preset: board.preset };
+    const nc = Object.assign({}, circ);
+    nb.cells[X].length -= n;
+    const N = nb.cells.length;
+    if (!nb.cells[X].length) {
+      const want = Object.keys(nc).filter((c) => nc[c] > 0 && canPark(nb, X, +c));
+      if (want.length > 1 || (want.length === 1 && +want[0] !== d && canPark(nb, X, d))) return null;
     }
+    let left = n;
+    for (let j = 0; j < n; j++) {
+      let placed = false;
+      for (let st = 1; st <= N; st++) { const t = (X + st) % N; if (canPark(nb, t, d)) { nb.cells[t].push(d); placed = true; break; } }
+      if (!placed) break; left--;
+    }
+    if (left) nc[d] = (nc[d] || 0) + left;
+    for (const c of Object.keys(nc)) { while (nc[c] > 0 && canPark(nb, X, +c)) { nb.cells[X].push(+c); nc[c]--; } if (!nc[c]) delete nc[c]; }
+    return { board: nb, circ: nc };
   }
-  function countKind(path, k) { let n = 0; for (const a of path) if (a.k === k) n++; return n; }
+  function boardWon(board, circ) { return (!circ || !Object.keys(circ).length) && board.cells.every((c, i) => !c.length || isCleared(c, board.cap[i])); }
+  const boardKey = (board, circ) => board.cells.map((c) => c.join('.')).join('|') + '#' + Object.keys(circ || {}).sort().map((k) => k + ':' + circ[k]).join(',');
 
-  // ---------- game state ----------
-  function firstLive(c) { for (let i = 0; i < c.pairs.length; i++) if (!c.pairs[i].gone) return i; return -1; }
-  function lastLive(c) { for (let i = c.pairs.length - 1; i >= 0; i--) if (!c.pairs[i].gone) return i; return -1; }
-  function isExposed(c, i) { const p = c.pairs[i]; return !!p && !c.glass && !p.gone && (i === firstLive(c) || i === lastLive(c)); }
-  function revealEnds(c, events) {
-    if (c.glass) return;
-    for (const i of [firstLive(c), lastLive(c)]) if (i >= 0 && c.pairs[i].hidden) { c.pairs[i].hidden = false; if (events) events.push({ type: 'reveal', crate: c.id, pair: i }); }
-  }
-  const glassList = (S) => S.crates.filter((c) => c.glass).map((c) => c.glass);
-  function moves(S) { const out = []; for (const c of S.crates) for (let i = 0; i < c.pairs.length; i++) if (isExposed(c, i)) out.push({ c: c.id, i }); return out; }
-  function remainingPairs(S) { let n = 0; for (const c of S.crates) for (const p of c.pairs) if (!p.gone) n++; return n; }
-
-  function newGame(lv) {
-    const S = {
-      level: lv.n, cap: C.PATH_CAPACITY, path: [], nextId: 1, status: 'play', reason: null,
-      moves: 0, plus2: 0, used: 0, history: [],
-      crates: lv.crates.map((c, id) => ({ id, glass: c.glass ? { kind: c.glass.kind, need: c.glass.need, crate: id } : null, pairs: c.pairs.map((p) => ({ k: p.k, hidden: !!p.hidden, gone: false })) })),
+  // Depth-first search with a greedy move order for a win with no power-ups.
+  function solve(board, limit, trackCap) {
+    limit = limit || C.SOLVER_NODE_LIMIT;
+    const seen = new Set(); let nodes = 0; const path = [];
+    const score = (st) => {
+      let v = 0;
+      const W = SW;
+      st.board.cells.forEach((c, i) => { if (!c.length) { v += W[0]; return; } const { run } = topRun(c); if (run === c.length) v += W[1] + run * W[2]; else v += run * W[3]; if (isCleared(c, st.board.cap[i])) v += 20;
+        // runs buried under other colors are work still to do
+        let breaks = 0; for (let j = 1; j < c.length; j++) if (c[j] !== c[j - 1]) breaks++; v -= breaks * W[5]; });
+      for (const k in st.circ) v -= st.circ[k] * W[4];
+      return v;
     };
-    for (const c of S.crates) revealEnds(c, null);
-    return S;
-  }
-  function snapshot(S) { const { history, ...rest } = S; return clone(rest); }
-  function pushHistory(S) { S.history.push(snapshot(S)); if (S.history.length > 200) S.history.shift(); }
-  function updateStatus(S) {
-    if (!remainingPairs(S) && !S.path.length) { S.status = 'won'; S.reason = null; return; }
-    if (S.path.length && S.cap - S.path.length < 2) { S.status = 'lost'; S.reason = 'full'; return; }
-    if (!moves(S).length) { S.status = 'lost'; S.reason = 'stuck'; return; }
-    S.status = 'play'; S.reason = null;
-  }
-  function afterChange(S, events) {
-    processPath(S.path, glassList(S), events);
-    for (const e of events.slice()) if (e.type === 'shatter') { const c = S.crates[e.crate]; c.glass = null; revealEnds(c, events); }
-    updateStatus(S);
-  }
-  function canTap(S, ci, pi) { const c = S.crates[ci]; return S.status === 'play' && !!c && isExposed(c, pi) && S.cap - S.path.length >= 2; }
-  function tap(S, ci, pi) {
-    if (!canTap(S, ci, pi)) return null;
-    pushHistory(S);
-    const c = S.crates[ci], p = c.pairs[pi];
-    p.gone = true;
-    const a = { k: p.k, id: S.nextId++ }, b = { k: p.k, id: S.nextId++ };
-    S.path.push(a, b); S.moves++;
-    const events = [{ type: 'enter', crate: ci, pair: pi, k: p.k, ids: [a.id, b.id] }];
-    revealEnds(c, events);
-    afterChange(S, events);
-    return events;
-  }
-  // ---------- power-ups (bank handled by the UI) ----------
-  function undo(S) {
-    if (!S.history.length) return false;
-    const h = S.history; const prev = h.pop();
-    Object.assign(S, prev); S.history = h; S.used++;
-    return true;
-  }
-  function canSwapPair(S, ci, pi) { const c = S.crates[ci]; const p = c && c.pairs[pi]; return !!p && !c.glass && !p.gone && !p.hidden; }
-  function swap(S, a, b) {
-    if (!canSwapPair(S, a.c, a.i) || !canSwapPair(S, b.c, b.i) || (a.c === b.c && a.i === b.i)) return false;
-    pushHistory(S);
-    const pa = S.crates[a.c].pairs[a.i], pb = S.crates[b.c].pairs[b.i];
-    [pa.k, pb.k] = [pb.k, pa.k]; S.used++;
-    updateStatus(S);
-    return true;
-  }
-  function canPlus2(S) { return S.plus2 < C.PLUS2_MAX_PER_LEVEL && S.status !== 'won'; }
-  function plus2(S) {
-    if (!canPlus2(S)) return false;
-    pushHistory(S);
-    S.cap += C.PLUS2_AMOUNT; S.plus2++; S.used++;
-    updateStatus(S);
-    return true;
-  }
-  function magnetPlan(S) {
-    if (!S.path.length || S.status === 'won') return null;
-    const k = S.path[0].k, have = countKind(S.path, k), need = C.SET_SIZE - have;
-    if (need <= 0) return null;
-    const cands = [];
-    for (const c of S.crates) { if (c.glass) continue; c.pairs.forEach((p, i) => { if (!p.gone && p.k === k) cands.push({ c: c.id, i, rank: isExposed(c, i) ? 0 : p.hidden ? 2 : 1 }); }); }
-    cands.sort((x, y) => x.rank - y.rank);
-    const pairs = Math.ceil(need / 2);
-    if (cands.length < pairs) return null;
-    return { k, need, take: cands.slice(0, pairs) };
-  }
-  function magnet(S) {
-    const plan = magnetPlan(S); if (!plan) return null;
-    pushHistory(S);
-    const pulls = [], pulled = [];
-    for (const t of plan.take) {
-      const p = S.crates[t.c].pairs[t.i]; p.gone = true;
-      const ids = [S.nextId++, S.nextId++]; pulls.push({ crate: t.c, pair: t.i, ids, hidden: p.hidden }); pulled.push(...ids);
-    }
-    const onPath = S.path.filter((a) => a.k === plan.k).map((a) => a.id);
-    S.path = S.path.filter((a) => a.k !== plan.k || onPath.indexOf(a.id) >= C.SET_SIZE);
-    const clearIds = onPath.slice(0, C.SET_SIZE).concat(pulled.slice(0, plan.need));
-    const extra = pulled.slice(plan.need);
-    for (const id of extra) S.path.push({ k: plan.k, id });
-    const events = [{ type: 'magnet', k: plan.k, pulls, clearIds, extra }];
-    for (const t of plan.take) revealEnds(S.crates[t.c], events);
-    S.used++;
-    afterChange(S, events);
-    return events;
-  }
-
-  // ---------- level generation ----------
-  // Builds a valid play order first (so a no-power-up win always exists), then packs it into crates.
-  function buildSequence(r, pairsOf, glassSpec, mix) {
-    const kinds = Object.keys(pairsOf).map(Number);
-    const rem = Object.assign({}, pairsOf);
-    let left = 0; for (const k of kinds) left += rem[k];
-    const path = [], glass = glassSpec.map((g, gi) => ({ kind: g.kind, need: g.need, crate: gi }));
-    const seq = []; let nodes = 0;
-    function dfs() {
-      if (++nodes > 30000) return false;
-      if (left === 0) return path.length === 0;
-      const front = path.length ? path[0].k : null;
-      const opts = kinds.filter((k) => rem[k] > 0).map((k) => {
-        let w = 1 + r() * 2;
-        if (k === front) w += (1 - mix) * 12;
-        w += countKind(path, k) * (1 - mix) * 2;
-        if (glass.some((g) => g.need > 0 && g.kind === k) && !path.length) w += 2;
-        return { k, w: w * (0.5 + r()) };
-      }).sort((a, b) => b.w - a.w);
-      for (const o of opts) {
-        const savePath = path.slice(), saveNeed = glass.map((g) => g.need);
-        rem[o.k]--; left--; path.push({ k: o.k }, { k: o.k }); seq.push(o.k);
-        processPath(path, glass, null);
-        const ok = !path.length || C.PATH_CAPACITY - path.length >= 2;
-        if (ok && dfs()) return true;
-        seq.pop(); rem[o.k]++; left++; path.length = 0; path.push(...savePath); glass.forEach((g, i) => { g.need = saveNeed[i]; });
+    function dfs(st) {
+      if (boardWon(st.board, st.circ)) return true;
+      if (++nodes > limit) return false;
+      const key = boardKey(st.board, st.circ); if (seen.has(key)) return false; seen.add(key);
+      const opts = [];
+      for (let b = 0; b < st.board.cells.length; b++) {
+        const c = st.board.cells[b];
+        if (!c.length || isCleared(c, st.board.cap[b])) continue;
+        const r = tapBoard(st.board, st.circ, b, trackCap); if (r) opts.push({ b, r, sc: score(r) });
       }
+      opts.sort((x, y) => y.sc - x.sc);
+      for (const o of opts) { path.push(o.b); if (dfs(o.r)) return true; path.pop(); if (nodes > limit) return false; }
       return false;
     }
-    if (!dfs()) return null;
-    // replay to find when each glass crate breaks
-    const p2 = [], g2 = glassSpec.map((g, gi) => ({ kind: g.kind, need: g.need, crate: gi })), breakAt = glassSpec.map(() => -1);
-    seq.forEach((k, t) => { p2.push({ k }, { k }); processPath(p2, g2, null); g2.forEach((g, gi) => { if (g.need === 0 && breakAt[gi] < 0) breakAt[gi] = t; }); });
-    return { seq, breakAt };
+    const ok = dfs({ board, circ: {} });
+    return { ok, nodes, solution: ok ? path.slice() : null };
   }
+  function replay(board, moves) { let st = { board, circ: {} }; for (const b of moves) { st = tapBoard(st.board, st.circ, b); if (!st) return null; } return st; }
 
-  // Board geometry in "units" (1 unit = one animal cell). Bands of vertical crates with dirt lanes between them.
-  const BW = 14.4, MARGIN = 1.35, CRATE_W = 2.2, LANE_H = 1.15, PER_BAND = 5;
-  function makeLayout(crateLens, glassIdx) {
-    // crateLens: array of lengths, glassIdx: set of crate indices that are glass (placed in the bottom band)
-    const n = crateLens.length;
-    const wood = [], glass = [];
-    for (let i = 0; i < n; i++) (glassIdx.has(i) ? glass : wood).push(i);
-    const bands = [[], [], [], []];
-    const total = n;
-    const used = Math.max(2, Math.min(4, Math.ceil(total / 4)));
-    const order = [[1, 2], [0, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3]][used - 1] || [0, 1, 2, 3];
-    const bandList = glass.length ? Array.from(new Set(order.concat([3]))).sort() : order.slice().sort();
-    // bottom band gets glass first
-    for (const g of glass) bands[3].push(g);
-    const woodBands = bandList.slice();
-    let wi = 0;
-    const per = Math.ceil(wood.length / Math.max(1, woodBands.length - (glass.length >= 3 ? 1 : 0)));
-    for (const b of woodBands) {
-      while (bands[b].length < PER_BAND && bands[b].length < per && wi < wood.length) {
-        bands[b].push(wood[wi++]);
-      }
-    }
-    for (const b of [0, 1, 2, 3]) while (wi < wood.length && bands[b].length < PER_BAND) bands[b].push(wood[wi++]);
-    if (wi < wood.length) return null;
-    const crates = new Array(n);
-    const lanes = [];
-    const maxPer = Math.max(...bands.map((b) => b.length));
-    const BWL = Math.max(9.2, 2 * MARGIN + maxPer * CRATE_W + (maxPer + 1) * 0.3);
-    let y = 0.35;
-    for (let b = 0; b < 4; b++) {
-      const list = bands[b];
-      const h = list.length ? Math.max(...list.map((i) => crateLens[i])) + 0.3 : 0.5;
-      const inner = BWL - 2 * MARGIN, gap = (inner - list.length * CRATE_W) / (list.length + 1);
-      list.forEach((ci, j) => {
-        const len = crateLens[ci], ch = len + 0.3;
-        const x = MARGIN + gap + j * (CRATE_W + gap);
-        const cy = b === 0 ? y + h - ch : b === 3 ? y : y + (h - ch) / 2;
-        crates[ci] = { x, y: cy, w: CRATE_W, h: ch, band: b };
-      });
-      y += h;
-      if (b < 3) { lanes.push(y + LANE_H / 2); y += LANE_H; }
-    }
-    const H = y + 0.35;
-    const xl = 0.68, xr = BWL - 0.68;
-    const path = [
-      { x: BWL - 0.05, y: lanes[0] }, { x: xl, y: lanes[0] }, { x: xl, y: lanes[1] },
-      { x: xr, y: lanes[1] }, { x: xr, y: lanes[2] }, { x: 1.0, y: lanes[2] },
-    ];
-    return { W: BWL, H, crates, path, lanes };
-  }
-
+  // ---------- level generation ----------
+  // Deal shuffled pairs (sometimes merged into runs of 4-6) into the barns, leave some barns empty,
+  // then keep the deal only if the solver finds a win without power-ups. Seeded by level number.
   function genAttempt(level, attempt) {
     const r = mulberry32(seedFor(level, attempt));
     const P = levelParams(level);
+    const merge = Math.min(0.85, P.merge + Math.floor(attempt / 25) * 0.08); // ease off if a seed keeps failing
     const kinds = shuffle(r, KINDS.map((_, i) => i)).slice(0, P.kinds);
-    // glass crates
-    const glassSpec = [];
-    const nGlass = P.glass ? (r() < 0.75 ? P.glass : P.glass - 1) : 0;
-    for (let g = 0; g < nGlass; g++) glassSpec.push({ kind: kinds[ri(r, 0, kinds.length - 1)], need: C.GLASS_COUNTS[ri(r, 0, C.GLASS_COUNTS.length - 1)] });
-    const pairsOf = {};
-    for (const k of kinds) pairsOf[k] = ri(r, 1, P.setsMax) * (C.SET_SIZE / 2);
-    for (const g of glassSpec) pairsOf[g.kind] += g.need / 2;
-    const sq = buildSequence(r, pairsOf, glassSpec, P.mix);
-    if (!sq) return null;
-    const T = sq.seq.length;
-    // crate sizes
-    const glassContent = glassSpec.map((g, gi) => Math.min(ri(r, C.GLASS_CONTENT[0], C.GLASS_CONTENT[1]), T - 1 - sq.breakAt[gi]));
-    if (glassContent.some((c) => c < 1)) return null;
-    let W = T - glassContent.reduce((a, b) => a + b, 0);
-    const maxLen = P.crateLen;
-    const woodLens = [];
-    while (W > 0) {
-      let len = Math.min(W, ri(r, Math.max(2, maxLen - 1), maxLen));
-      if (W - len === 1) len = Math.min(maxLen, len + 1) === len ? len - 1 : len + 1;
-      if (len <= 0) len = W;
-      woodLens.push(len); W -= len;
-    }
-    const lens = glassContent.concat(woodLens);
-    const glassIdx = new Set(glassSpec.map((_, i) => i));
-    if (lens.length > 20) return null;
-    const layout = makeLayout(lens, glassIdx);
-    if (!layout) return null;
-    // assign the play order to crate ends
-    const fill = lens.map(() => ({ L: [], R: [] })), count = lens.map(() => 0);
-    for (let t = 0; t < T; t++) {
-      const k = sq.seq[t];
-      let elig = [];
-      for (let ci = 0; ci < lens.length; ci++) {
-        if (count[ci] >= lens[ci]) continue;
-        if (glassIdx.has(ci)) { if (sq.breakAt[ci] >= t) continue; elig.push({ ci, w: 50 }); }
-        else elig.push({ ci, w: lens[ci] - count[ci] });
-      }
-      if (!elig.length) return null;
-      // wood crates must keep enough room for what is left after glass is filled
-      let sum = 0; for (const e of elig) sum += e.w;
-      let x = r() * sum, pick = elig[0].ci;
-      for (const e of elig) { x -= e.w; if (x <= 0) { pick = e.ci; break; } }
-      (r() < 0.5 ? fill[pick].L : fill[pick].R).push(k); count[pick]++;
-    }
-    if (count.some((c, i) => c !== lens[i])) return null;
-    const crates = fill.map((f, ci) => {
-      const ks = f.L.concat(f.R.slice().reverse());
-      const pairs = ks.map((k, i) => ({ k, hidden: (i > 0 && i < ks.length - 1 || glassIdx.has(ci)) && r() < (glassIdx.has(ci) ? Math.max(P.hidden, 0.3) : P.hidden) }));
-      return { pairs, glass: glassIdx.has(ci) ? { kind: glassSpec[ci].kind, need: glassSpec[ci].need } : null };
-    });
-    return { n: level, attempt, params: P, crates, layout, intended: sq.seq };
+    const chunks = [];
+    for (const k of kinds) { let left = CAP; while (left > 0) { let sz = 2; while (sz < left && sz < 8 && r() < merge) sz += 2; chunks.push({ k, sz }); left -= sz; } }
+    shuffle(r, chunks);
+    const flat = []; for (const c of chunks) for (let i = 0; i < c.sz; i++) flat.push(c.k);
+    const cells = [];
+    for (let b = 0; b < P.kinds; b++) cells.push(flat.slice(b * CAP, b * CAP + CAP));
+    for (let e = 0; e < P.empty; e++) cells.push([]);
+    shuffle(r, cells);
+    if (cells.some((c) => isCleared(c, CAP))) return null;
+    const preset = cells.map(() => null);
+    const pk = shuffle(r, kinds.slice()).slice(0, P.presets);
+    const slots = shuffle(r, cells.map((_, i) => i)).slice(0, pk.length);
+    slots.forEach((b, i) => { preset[b] = pk[i]; });
+    const board = { cells, cap: cells.map(() => CAP), preset };
+    const s = solve(board, C.SOLVER_NODE_LIMIT);
+    if (!s.ok) return null;
+    const mystery = cells.map((c) => c.map(() => false));
+    cells.forEach((c, b) => { const rows = Math.ceil(c.length / 2); for (let row = 0; row < rows - 1; row++) if (r() < P.mystery) { mystery[b][row * 2] = true; if (row * 2 + 1 < c.length) mystery[b][row * 2 + 1] = true; } });
+    return { n: level, attempt, params: P, merge, kinds, board, mystery, solution: s.solution, solverNodes: s.nodes, layout: null };
   }
-
-  // Full-information solver: is there a win with no power-ups?
-  function solve(lv, limit) {
-    limit = limit || C.SOLVER_NODE_LIMIT;
-    const cr = lv.crates.map((c) => c.pairs.map((p) => p.k));
-    const lo = cr.map(() => 0), hi = cr.map((c) => c.length);
-    const glass = lv.crates.map((c, i) => (c.glass ? { kind: c.glass.kind, need: c.glass.need, crate: i } : null));
-    const gl = glass.filter(Boolean);
-    let path = [], left = 0; for (const c of cr) left += c.length;
-    const seen = new Set(); let nodes = 0; const sol = [];
-    const key = () => lo.join(',') + '|' + hi.join(',') + '|' + path.map((a) => a.k).join('') + '|' + gl.map((g) => g.need).join(',');
-    function dfs() {
-      if (left === 0) return path.length === 0;
-      if (++nodes > limit) throw new Error('limit');
-      const kk = key(); if (seen.has(kk)) return false; seen.add(kk);
-      const front = path.length ? path[0].k : -1;
-      const mv = [];
-      for (let i = 0; i < cr.length; i++) {
-        if (lo[i] >= hi[i]) continue;
-        if (glass[i] && glass[i].need > 0) continue;
-        mv.push({ i, end: 0, k: cr[i][lo[i]] });
-        if (hi[i] - 1 > lo[i]) mv.push({ i, end: 1, k: cr[i][hi[i] - 1] });
-      }
-      const score = (m) => (m.k === front ? 100 : 0) + countKind(path, m.k) * 10 + (gl.some((g) => g.need > 0 && g.kind === m.k) ? 5 : 0);
-      mv.sort((a, b) => score(b) - score(a));
-      for (const m of mv) {
-        const sp = path.slice(), sn = gl.map((g) => g.need);
-        if (m.end === 0) lo[m.i]++; else hi[m.i]--;
-        left--; path.push({ k: m.k }, { k: m.k });
-        processPath(path, gl, null);
-        sol.push(m);
-        if ((!path.length || C.PATH_CAPACITY - path.length >= 2) && dfs()) return true;
-        sol.pop();
-        path = sp; gl.forEach((g, j) => { g.need = sn[j]; }); left++;
-        if (m.end === 0) lo[m.i]--; else hi[m.i]++;
-      }
-      return false;
-    }
-    try { const ok = dfs(); return { ok, nodes, solution: ok ? sol.map((m) => ({ c: m.i, end: m.end, k: m.k })) : null }; }
-    catch (e) { return { ok: false, nodes, timeout: true }; }
-  }
-
-  // "Blind" bot: sees only what a player sees (no peeking under ? tiles or glass). Used to keep levels fair.
-  function botPlay(lv, r) {
-    const S = newGame(lv);
-    for (let guard = 0; guard < 500 && S.status === 'play'; guard++) {
-      const mv = moves(S).filter((m) => canTap(S, m.c, m.i));
-      if (!mv.length) break;
-      const front = S.path.length ? S.path[0].k : null;
-      const visible = {};
-      for (const c of S.crates) for (const p of c.pairs) if (!p.gone && !p.hidden && !c.glass) visible[p.k] = (visible[p.k] || 0) + 1;
-      const glassWant = {};
-      for (const c of S.crates) if (c.glass && c.glass.need > 0) glassWant[c.glass.kind] = 1;
-      let best = null, bs = -1e9;
-      for (const m of mv) {
-        const k = S.crates[m.c].pairs[m.i].k;
-        let s = r() * 3;
-        if (k === front) s += 100;
-        s += countKind(S.path, k) * 12;
-        if (glassWant[k]) s += S.path.length ? 2 : 30;
-        s += (visible[k] || 0) * 1.5;
-        const free = S.cap - S.path.length;
-        if (front != null && k !== front && free <= 4) s -= 60;
-        if (s > bs) { bs = s; best = m; }
-      }
-      tap(S, best.c, best.i);
-    }
-    return S.status === 'won';
-  }
-  function botWinRate(lv, runs, seed) {
-    const r = mulberry32(seed || 12345); let w = 0;
-    for (let i = 0; i < runs; i++) if (botPlay(lv, r)) w++;
-    return w / runs;
-  }
-
   const cache = {};
   function generateLevel(level) {
     if (cache[level]) return cache[level];
-    const P = levelParams(level);
-    let fallback = null;
     for (let attempt = 0; attempt < C.GEN_MAX_TRIES; attempt++) {
       const lv = genAttempt(level, attempt);
       if (!lv) continue;
-      const s = solve(lv);
-      if (!s.ok) continue;
-      lv.solverNodes = s.nodes;
-      lv.botRate = botWinRate(lv, C.BOT_RUNS, seedFor(level, attempt) ^ 77);
-      if (!fallback || lv.botRate > fallback.botRate) fallback = lv;
-      if (lv.botRate >= P.botMin) { cache[level] = lv; return lv; }
+      const end = replay(lv.board, lv.solution);     // double-check the found win against the rules
+      if (!end || !boardWon(end.board, end.circ)) continue;
+      lv.layout = makeLayout(lv.board.cells.length);
+      cache[level] = lv; return lv;
     }
-    if (fallback) { cache[level] = fallback; return fallback; }
     throw new Error('could not generate level ' + level);
+  }
+
+  // ---------- live game (real-time loop) ----------
+  function newGame(lv) {
+    let nextId = 1;
+    const S = {
+      level: lv.n, cap: C.TRACK_CAPACITY, status: 'play', reason: null, t: 0, used: 0, plus2: 0, zoom: false,
+      track: [], history: [], revealed: {}, removed: [], moves: 0, L: lv.layout.L,
+      barns: lv.board.cells.map((cells, b) => ({ id: b, temp: false, cap: lv.board.cap[b], preset: lv.board.preset[b], dock: lv.layout.barns[b].dock, cleared: false, queue: [],
+        cells: cells.map((k, i) => ({ id: nextId++, k, mystery: !!lv.mystery[b][i] })) })),
+      tempUsed: 0,
+    };
+    S.nextId = nextId;
+    S.barns.forEach((B) => { B.cleared = isCleared(B.cells.map((a) => a.k), B.cap); });
+    S.layoutRef = lv.layout;
+    return S;
+  }
+  const trackCount = (S) => S.track.length + S.barns.reduce((a, B) => a + B.queue.length, 0);
+  function barnCanPark(B, k) { const c = B.cells; return c.length < B.cap && (B.preset == null || B.preset === k) && (!c.length || c[c.length - 1].k === k); }
+  function frontGroup(B) { const c = B.cells; if (!c.length) return { k: -1, run: 0 }; const k = c[c.length - 1].k; let r = 0; for (let i = c.length - 1; i >= 0 && c[i].k === k; i--) r++; return { k, run: r }; }
+  function snapshot(S) { const { history, layoutRef, ...rest } = S; return clone(rest); }
+  function pushHistory(S) { S.history.push(snapshot(S)); if (S.history.length > 60) S.history.shift(); }
+  function tap(S, b) {
+    const B = S.barns[b];
+    if (!B || S.status !== 'play') return { ok: false, why: 'over' };
+    const { k, run } = frontGroup(B);
+    if (!run) return { ok: false, why: 'empty' };
+    const room = S.cap - trackCount(S);
+    const n = Math.min(run, room);
+    if (n <= 0) return { ok: false, why: 'full' };
+    pushHistory(S);
+    const out = [];
+    for (let j = 0; j < n; j++) { const a = B.cells.pop(); const wasMystery = a.mystery; a.mystery = false; S.revealed[a.id] = 1; B.queue.push(a); out.push({ id: a.id, wasMystery }); }
+    const events = [{ type: 'exit', barn: b, k, n, split: n < run, animals: out }];
+    if (B.cleared) { B.cleared = false; events.push({ type: 'unclear', barn: b }); }
+    S.moves++;
+    return { ok: true, n, k, split: n < run, events };
+  }
+  // Advance the parade by dt seconds. Returns events (enter, park, clear, reveal, won, lost).
+  function step(S, dt) {
+    const ev = [];
+    if (S.status !== 'play') return ev;
+    const L = S.L, gap = C.GAP;
+    S.t += dt;
+    // merge queued animals onto the track when the spot in front of their barn is clear
+    for (const B of S.barns) {
+      if (!B.queue.length) continue;
+      let free = true;
+      for (const a of S.track) { const ahead = mod(a.s - B.dock, L), behind = mod(B.dock - a.s, L); if (ahead < gap * 0.98 || behind < gap * 0.98) { free = false; break; } }
+      if (!free) continue;
+      const a = B.queue.shift(); a.s = mod(B.dock + 1e-4, L); a.from = B.id; S.track.push(a);
+      ev.push({ type: 'enter', id: a.id, barn: B.id });
+    }
+    // car-following movement around the loop
+    const v = C.SPEED * (S.zoom ? C.ZOOM_SPEED : 1) * dt;
+    const tr = S.track; const n = tr.length;
+    if (n) {
+      tr.sort((a, b) => a.s - b.s);
+      const old = tr.map((a) => a.s); const nw = new Array(n);
+      let k0 = 0, best = -1;
+      for (let i = 0; i < n; i++) { const h = n === 1 ? L : mod(old[(i + 1) % n] - old[i], L); if (h > best) { best = h; k0 = i; } }
+      nw[k0] = old[k0] + (n === 1 ? v : Math.min(v, Math.max(0, best - gap) + v));
+      for (let j = 1; j < n; j++) {
+        const i = mod(k0 - j, n), ld = (i + 1) % n;
+        let lead = nw[ld]; if (lead < old[i]) lead += L * Math.ceil((old[i] - lead) / L + 1e-9);
+        while (lead - old[i] > L) lead -= L;
+        nw[i] = Math.max(old[i], Math.min(old[i] + v, lead - gap));
+      }
+      // parking: check docks crossed this step, nearest first; animals further ahead go first
+      const docks = S.barns.map((B) => ({ B, d: B.dock }));
+      const idx = tr.map((_, i) => i).sort((a, b) => mod(old[k0] - old[b], L) - mod(old[k0] - old[a], L));
+      const parked = new Set();
+      for (const i of idx) {
+        const a = tr[i], moved = nw[i] - old[i];
+        a.s = mod(nw[i], L);
+        if (moved <= 0) continue;
+        let hit = null, hd = 1e9;
+        for (const { B, d } of docks) { const dd = mod(d - old[i], L); if (dd > 0 && dd <= moved + 1e-9 && dd < hd && barnCanPark(B, a.k)) { hit = B; hd = dd; } }
+        if (hit) {
+          parked.add(a.id);
+          const top = hit.cells[hit.cells.length - 1];
+          if (top && top.mystery) { top.mystery = false; S.revealed[top.id] = 1; ev.push({ type: 'reveal', barn: hit.id, id: top.id }); }
+          delete a.s; delete a.from; hit.cells.push(a);
+          ev.push({ type: 'park', id: a.id, barn: hit.id, k: a.k });
+          if (!hit.temp && isCleared(hit.cells.map((x) => x.k), hit.cap)) { hit.cleared = true; ev.push({ type: 'clear', barn: hit.id, k: a.k }); }
+        }
+      }
+      if (parked.size) S.track = tr.filter((a) => !parked.has(a.id));
+    }
+    updateStatus(S, ev);
+    return ev;
+  }
+  function anyParkable(S) { for (const a of S.track) for (const B of S.barns) if (barnCanPark(B, a.k)) return true; return false; }
+  function updateStatus(S, ev) {
+    const queued = S.barns.some((B) => B.queue.length);
+    // zoom when every barn is single-colored and every parading animal has a home waiting
+    S.zoom = !queued && S.track.length > 0 && S.barns.every((B) => !B.cells.length || B.cells.every((a) => a.k === B.cells[0].k)) &&
+      S.track.every((a) => S.barns.some((B) => barnCanPark(B, a.k))) && S.barns.every((B) => !B.temp || !B.cells.length);
+    if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
+    if (!queued && trackCount(S) >= S.cap && !anyParkable(S)) { S.status = 'lost'; S.reason = 'full'; if (ev) ev.push({ type: 'lost' }); }
+  }
+  // Settle: run the parade until nothing changes (all parked, or animals circling with nowhere to go)
+  function settle(S, maxT) {
+    const all = []; let idle = 0; const dt = 0.05; let t = 0;
+    while (S.status === 'play' && t < (maxT || 120)) {
+      const ev = step(S, dt); t += dt; all.push(...ev);
+      const queued = S.barns.some((B) => B.queue.length);
+      if (!queued && (!S.track.length || !anyParkable(S))) { idle += dt; if (idle > (S.track.length ? S.L / C.SPEED + 1 : 0)) break; } else idle = 0;
+    }
+    return all;
+  }
+
+  // ---------- power-ups ----------
+  function redo(S) {
+    if (!S.history.length) return false;
+    const keep = Object.assign({}, S.revealed), h = S.history, prev = h.pop();
+    const used = S.used, cap = S.cap, plus2 = S.plus2, temps = S.barns.filter((B) => B.temp).length;
+    Object.assign(S, prev); S.history = h; S.revealed = keep; S.used = used + 1; S.cap = Math.max(S.cap, cap); S.plus2 = plus2;
+    // mystery animals stay revealed; extra barns bought later are kept (empty)
+    for (const B of S.barns) for (const a of B.cells.concat(B.queue)) if (keep[a.id]) a.mystery = false;
+    while (S.barns.filter((B) => B.temp).length < temps) addTempBarnRaw(S);
+    S.status = 'play'; S.reason = null;
+    return true;
+  }
+  function plus2(S) { const maxCap = Math.floor(S.L / C.GAP) - 1; if (S.cap + C.PLUS2_AMOUNT > maxCap) return false; S.cap += C.PLUS2_AMOUNT; S.plus2++; S.used++; if (S.status === 'lost') { S.status = 'play'; S.reason = null; } return true; }
+  function magnet(S, r) {
+    // remove every animal of one random color that is not already sorted away
+    const kinds = new Set();
+    for (const B of S.barns) for (const a of B.cells.concat(B.queue)) if (!B.cleared) kinds.add(a.k);
+    for (const a of S.track) kinds.add(a.k);
+    const list = [...kinds]; if (!list.length) return null;
+    const k = list[Math.floor((r || Math.random)() * list.length)];
+    pushHistory(S);
+    const gone = [];
+    for (const B of S.barns) { B.cells = B.cells.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); B.queue = B.queue.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); }
+    S.track = S.track.filter((a) => (a.k === k ? (gone.push({ id: a.id, s: a.s }), false) : true));
+    S.removed.push(k); S.used++;
+    for (const B of S.barns) { if (B.preset === k) B.preset = null; B.cleared = !B.temp && isCleared(B.cells.map((x) => x.k), B.cap); }
+    if (S.status === 'lost') { S.status = 'play'; S.reason = null; }
+    updateStatus(S, null);
+    return { k, gone };
+  }
+  function addTempBarnRaw(S) {
+    const lay = S.layoutRef; const i = S.barns.filter((B) => B.temp).length; if (i >= C.TEMP_BARN_MAX) return null;
+    const B = { id: S.barns.length, temp: true, tempIndex: i, cap: C.TEMP_BARN_CAP, preset: null, dock: lay.temps[i].dock, cleared: false, queue: [], cells: [] };
+    S.barns.push(B); return B;
+  }
+  function addTempBarn(S) { const B = addTempBarnRaw(S); if (!B) return null; S.used++; if (S.status === 'lost') { S.status = 'play'; S.reason = null; } return B; }
+  function shuffleColors(S, r) {
+    // re-deal the animals of every unsorted barn in pairs, keeping each barn's count; tries for a deal the solver can finish
+    r = r || Math.random;
+    const bs = S.barns.filter((B) => !B.cleared && !B.temp && B.cells.length);
+    if (!bs.length) return false;
+    pushHistory(S);
+    const pool = []; for (const B of bs) pool.push(...B.cells);
+    const byK = {}; for (const a of pool) (byK[a.k] = byK[a.k] || []).push(a);
+    let best = null;
+    for (let tryN = 0; tryN < 12; tryN++) {
+      const chunks = []; for (const k of Object.keys(byK)) { const arr = byK[k].slice(); for (let i = 0; i < arr.length; i += 2) chunks.push(arr.slice(i, i + 2)); }
+      shuffle(r, chunks); const flat = [].concat(...chunks);
+      let p = 0; const deal = bs.map((B) => { const n = B.cells.length; const c = flat.slice(p, p + n); p += n; return c; });
+      best = deal;
+      if (!S.track.length && !S.barns.some((B) => B.queue.length)) {
+        const board = { cells: S.barns.map((B) => { const j = bs.indexOf(B); return (j >= 0 ? deal[j] : B.cells).map((a) => a.k); }), cap: S.barns.map((B) => B.cap), preset: S.barns.map((B) => B.preset) };
+        if (solve(board, 3000).ok) break;
+      } else break;
+    }
+    bs.forEach((B, j) => { B.cells = best[j]; });
+    S.used++;
+    return true;
   }
 
   function rewardFor(level) {
     const out = {};
     const rot = C.REWARD_ROTATION[(level - 1) % C.REWARD_ROTATION.length];
     out[rot] = 1;
-    if (level % C.BUNDLE_EVERY === 0) for (const k of C.REWARD_ROTATION) out[k] = (out[k] || 0) + 1;
+    if (level % C.BUNDLE_EVERY === 0) for (const k of Object.keys(C.START_BANK)) out[k] = (out[k] || 0) + 1;
     return out;
   }
   function starsFor(S) { return S.used === 0 ? 3 : S.used <= 2 ? 2 : 1; }
+  function boardOf(S) { return { cells: S.barns.map((B) => B.cells.map((a) => a.k)), cap: S.barns.map((B) => B.cap), preset: S.barns.map((B) => B.preset) }; }
 
   return {
-    KINDS, CONFIG: C, mulberry32, levelParams, processPath, countKind, newGame, tap, canTap, isExposed, moves,
-    remainingPairs, undo, swap, canSwapPair, plus2, canPlus2, magnet, magnetPlan, updateStatus, generateLevel,
-    genAttempt, buildSequence, makeLayout, solve, botPlay, botWinRate, rewardFor, starsFor, firstLive, lastLive, snapshot,
+    KINDS, CONFIG: C, mulberry32, levelParams, makeLayout, pointAt, topRun, canPark, isCleared, tapBoard, boardWon, solve, replay,
+    genAttempt, generateLevel, newGame, tap, step, settle, trackCount, barnCanPark, frontGroup, redo, plus2, magnet, addTempBarn,
+    shuffleColors, setSolverWeights, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
   };
 });

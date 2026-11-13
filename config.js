@@ -1,7 +1,7 @@
 // Barnyard Parade: names and tuning knobs. Change GAME_NAME here to rename the game everywhere.
 (function (root) {
   const GAME_NAME = 'Barnyard Parade';
-  const VERSION = 2;
+  const VERSION = 3;
   const CONFIG = {
     // Core rules
     TRACK_CAPACITY: 16,       // animals allowed on the loop at once (the "x/16" sign)
@@ -9,7 +9,7 @@
     TEMP_BARN_CAP: 4,         // the "extra barn" power-up holds 4
     TEMP_BARN_MAX: 2,         // extra barns per level
     PLUS2_AMOUNT: 2,          // +2 power-up (stacks)
-    SPEED: 4.2,               // parade speed, cells per second
+    SPEED: 5.25,               // parade speed, cells per second
     ZOOM_SPEED: 3.2,          // speed multiplier when the last animals head home
     GAP: 1.0,                 // spacing between parading animals, in cells
 
@@ -28,8 +28,9 @@
     MYSTERY_MAX: 0.3,
     MYSTERY_RAMP: 30,
     PRESET_FROM: 5,           // first level with color-locked barns
-    PRESET_EVERY: 9,          // +1 color-locked barn every N levels
-    PRESET_MAX: 2,
+    PRESET_START: 2,          // color-locked barns from PRESET_FROM
+    PRESET_MORE_FROM: 15,     // level where it goes up to PRESET_MAX
+    PRESET_MAX: 3,
     
     // Fairness: every level must be beaten by the rules engine without power-ups before it is shown
     SOLVER_NODE_LIMIT: 2000,

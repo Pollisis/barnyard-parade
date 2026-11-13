@@ -64,23 +64,38 @@ const fill = (k, n) => new Array(n).fill(k);
   ok(G.plus2(S) && S.cap === 10 && S.status === 'play', '+2 adds track room and resumes');
   ok(G.plus2(S) && S.cap === 12, '+2 stacks');
 }
-// 7. mystery animals: hidden until they leave, and they stay revealed after Redo
+// 7. mystery animals: the front pair is always shown; the rest stay hidden until they reach the front, and stay revealed after Redo
 {
-  const S = G.newGame(mk([[1, 5, 5], [2, 2]], { mystery: [[false, true, true], [false, false]] }));
-  const ids = S.barns[0].cells.slice(1).map((a) => a.id);
-  ok(S.barns[0].cells[2].mystery, 'front pair starts as a mystery box');
+  const S = G.newGame(mk([[2, 2, 3, 3, 5, 5, 6, 6], [], [1]], { mystery: [[true, true, true, true, true, true, true, true], [], [false]] }));
+  const c = S.barns[0].cells;
+  ok(!c[7].mystery && !c[6].mystery && c[5].mystery && c[0].mystery, 'front pair is revealed at the start, the rest hidden');
   G.tap(S, 0);
-  ok(S.barns[0].queue.every((a) => !a.mystery), 'revealed when they leave');
-  G.settle(S);
+  ok(!S.barns[0].cells[5].mystery && !S.barns[0].cells[4].mystery && S.barns[0].cells[3].mystery, 'next pair is revealed as soon as it becomes the front');
+  const ids = S.barns[0].cells.slice(4).map((a) => a.id);
+  G.settle(S); G.tap(S, 0); G.settle(S);
   ok(G.redo(S), 'redo works');
   const back = S.barns[0].cells.filter((a) => ids.includes(a.id));
   ok(back.length === 2 && back.every((a) => !a.mystery), 'redo puts them back and they stay revealed');
+  ok(S.barns.every((B) => { const n = B.cells.length; return !n || !B.cells[n - 1].mystery; }), 'no hidden animal at any front after redo');
 }
-// 8. a matching animal parking next to a mystery box reveals it
+// 8. parking priority: a matching barn beats an empty barn even when the empty one comes first
 {
-  const S = G.newGame(mk([[1, 4, 4], [0, 4]], { mystery: [[false, false, false], [false, true]] }));
-  G.tap(S, 0); const ev = G.settle(S);
-  ok(ev.some((e) => e.type === 'reveal') && kinds(S.barns[1]).join() === '0,4,4,4', 'parking next to a hidden match reveals it');
+  const S = G.newGame(mk([[1, 4, 4], [], [0, 4]]));
+  G.tap(S, 0); G.settle(S);
+  ok(S.barns[1].cells.length === 0 && kinds(S.barns[2]).join() === '0,4,4,4', 'animals skip an empty barn when their own kind has a barn');
+  const T = G.newGame(mk([[1, 4, 4], [], [0, 3]]));
+  G.tap(T, 0); G.settle(T);
+  ok(kinds(T.barns[1]).join() === '4,4', 'no matching barn: they use the empty one');
+}
+// 8b. a designated animal only ever parks in its designated barn
+{
+  const S = G.newGame(mk([[1, 5, 5], [], [5, 2, 2]], { preset: [null, null, 5] }));
+  G.tap(S, 0); G.settle(S);
+  ok(S.barns[1].cells.length === 0 && S.track.length === 2, 'frogs with a frog barn never take an empty barn (they keep parading)');
+  const B = G.addTempBarn(S); G.settle(S);
+  ok(B.cells.length === 0 && S.track.length === 2, 'designated animals do not use the extra barn either');
+  G.tap(S, 2); G.settle(S);
+  ok(kinds(S.barns[2]).join() === '5,5,5' && S.track.length === 0 && (kinds(S.barns[1]).join() === '2,2' || kinds(B).join() === '2,2'), 'once their barn shows a frog again, they go home; others use the empty barn');
 }
 // 9. magnet removes every animal of one color
 {

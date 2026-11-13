@@ -9,6 +9,7 @@ const errors = [], log = [];
 const check = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); if (!c) errors.push(m); };
 const ready = (p) => p.waitForFunction(() => window.__bp && window.__bp.S && !window.__bp.loading, null, { timeout: 60000 });
 const settled = (p) => p.waitForFunction(() => window.__bp.settled || window.__bp.S.status !== 'play', null, { timeout: 30000 });
+async function usePw(p, k) { await p.click('.pw[data-pw="' + k + '"]'); await p.waitForSelector('#pw-use', { timeout: 3000 }); await p.click('#pw-use'); }
 async function tapBarn(p, b) { const pt = await p.evaluate((b) => window.__bp.barnScreen(b), b); await p.mouse.click(pt.x, pt.y); }
 // Plays the verified solution with real taps; stop(p) can end it early.
 async function play(p, stop) {
@@ -93,20 +94,26 @@ async function play(p, stop) {
   await tapBarn(page, cb); await page.waitForTimeout(200);
   check(await page.evaluate((cb) => !window.__bp.S.barns[cb].cleared, cb), 'animals can leave a fenced barn');
   // Redo puts them back
-  await page.click('.pw[data-pw="redo"]'); await page.waitForTimeout(200);
+  await usePw(page, 'redo'); await page.waitForTimeout(200);
   check(await page.evaluate(([cb, t]) => window.__bp.S.barns[cb].cleared && window.__bp.S.track.length === t, [cb, trackBefore]), 'Redo puts the last group back');
 
+  // power-ups ask first
+  await page.click('.pw[data-pw="magnet"]');
+  const conf = await page.evaluate(() => ({ t: window.__bp.modal, b: document.querySelector('#m-body').textContent }));
+  check(conf.t === 'Magnet' && /random color/.test(conf.b) && /left/.test(conf.b), 'power-up confirm shows name, description and count');
+  await page.click('#pw-cancel');
+  check((await page.evaluate(() => window.__bp.modal)) === null, 'cancel closes it without using');
   // power-ups
   await page.evaluate(() => { const b = window.__bp.save.bank; b.plus2 = 2; b.barn = 1; b.magnet = 1; b.shuffle = 1; });
-  await page.click('.pw[data-pw="plus2"]'); await page.click('.pw[data-pw="plus2"]'); await page.waitForTimeout(200);
+  await usePw(page, 'plus2'); await usePw(page, 'plus2'); await page.waitForTimeout(200);
   check(/\/20$/.test(await page.textContent('#cap-text')), '+2 stacks (' + (await page.textContent('#cap-text')) + ')');
   const nb = await page.evaluate(() => window.__bp.S.barns.length);
-  await page.click('.pw[data-pw="barn"]'); await page.waitForTimeout(200);
+  await usePw(page, 'barn'); await page.waitForTimeout(200);
   check((await page.evaluate(() => window.__bp.S.barns.length)) === nb + 1, 'extra barn added');
   const kinds0 = await page.evaluate(() => new Set(window.__bp.S.barns.flatMap((B) => B.cells.map((a) => a.k))).size);
-  await page.click('.pw[data-pw="magnet"]'); await page.waitForTimeout(1500);
+  await usePw(page, 'magnet'); await page.waitForTimeout(1500);
   check((await page.evaluate(() => new Set(window.__bp.S.barns.flatMap((B) => B.cells.map((a) => a.k))).size)) === kinds0 - 1, 'magnet removed one color');
-  await page.click('.pw[data-pw="shuffle"]'); await page.waitForTimeout(300);
+  await usePw(page, 'shuffle'); await page.waitForTimeout(300);
   check((await page.evaluate(() => window.__bp.save.bank.shuffle)) === 0, 'shuffle used');
   await page.screenshot({ path: out + '/06-after-power-ups.png' });
 
@@ -134,16 +141,31 @@ async function play(p, stop) {
   await page.screenshot({ path: out + '/09-settings.png' });
   await page.evaluate(() => window.__bp.closeModal());
 
-  // tablet
+  // iPad portrait: color-locked barns, scenery, power-up confirm; then landscape
   const tab = await browser.newContext({ viewport: { width: 820, height: 1180 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-  const tp = await tab.newPage(); tp.on('pageerror', (e) => consoleErr.push(e.message));
-  await tp.addInitScript(() => localStorage.setItem('barnyard-parade.save.v2', JSON.stringify({ seenHelp: true, maxLevel: 6, current: 6 })));
+  const tp = await tab.newPage(); tp.on('pageerror', (e) => consoleErr.push(e.message)); tp.on('console', (m) => { if (m.type() === 'error') consoleErr.push(m.text()); });
+  await tp.addInitScript(() => { if (!localStorage.getItem('barnyard-parade.save.v2')) localStorage.setItem('barnyard-parade.save.v2', JSON.stringify({ seenHelp: true, maxLevel: 21, current: 21 })); });
   await tp.goto(url); await ready(tp);
-  const s6 = await tp.evaluate(() => window.__bp.lv.solution.slice(0, 4));
-  for (const b of s6) { await tapBarn(tp, b); await tp.waitForTimeout(400); }
-  await tp.waitForTimeout(600);
-  await tp.screenshot({ path: out + '/10-tablet.png' });
-  check(true, 'tablet layout');
+  const pres = await tp.evaluate(() => window.__bp.S.barns.filter((B) => B.preset != null).length);
+  check(pres === 3, 'level 21 has 3 color-locked barns');
+  await tp.evaluate(() => { window.__bp.speed = 1; });
+  const s21 = await tp.evaluate(() => window.__bp.lv.solution.slice(0, 3));
+  for (const b of s21) { await tapBarn(tp, b); await tp.waitForTimeout(450); }
+  await tp.waitForTimeout(700);
+  await tp.screenshot({ path: out + '/10-ipad-portrait-designated-scenery.png' });
+  await tp.click('.pw[data-pw="barn"]'); await tp.waitForTimeout(300);
+  await tp.screenshot({ path: out + '/11-ipad-powerup-confirm.png' });
+  await tp.click('#pw-cancel');
+  await tp.setViewportSize({ width: 1180, height: 820 }); await tp.waitForTimeout(800);
+  const fit = await tp.evaluate(() => { const r = document.querySelector('#board').getBoundingClientRect(); const a = window.__bp.barnScreen(0), z = window.__bp.barnScreen(window.__bp.S.barns.length - 1); return a.y > r.top && z.y < r.bottom; });
+  check(fit, 'landscape: whole board fits after rotating');
+  await tp.screenshot({ path: out + '/12-ipad-landscape.png' });
+  const land = await browser.newContext({ viewport: { width: 1180, height: 820 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const lp = await land.newPage(); lp.on('pageerror', (e) => consoleErr.push(e.message));
+  await lp.addInitScript(() => localStorage.setItem('barnyard-parade.save.v2', JSON.stringify({ seenHelp: true, maxLevel: 18, current: 18 })));
+  await lp.goto(url); await ready(lp);
+  check(await lp.evaluate(() => { const r = document.querySelector('#board').getBoundingClientRect(); const a = window.__bp.barnScreen(0), z = window.__bp.barnScreen(window.__bp.S.barns.length - 1); return a.y > r.top && z.y < r.bottom; }), 'landscape start: whole board fits');
+  await lp.screenshot({ path: out + '/13-ipad-landscape-level18.png' });
 
   check(consoleErr.length === 0, 'no console errors' + (consoleErr.length ? ': ' + consoleErr.slice(0, 3).join(' | ') : ''));
   await browser.close();

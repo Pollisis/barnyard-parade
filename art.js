@@ -10,10 +10,13 @@
     bunny: { name: 'Bunny', plural: 'bunnies', color: '#9aa1ab' }, hen: { name: 'Hen', plural: 'hens', color: '#ff8a2a' },
     blacksheep: { name: 'Black sheep', plural: 'black sheep', color: '#3a3d44' }, goat: { name: 'Goat', plural: 'goats', color: '#b48ae6' },
   };
+  // floor colors for color-locked barns: the animal's color, deep enough to stand out from plain wood
+  const FLOOR = { pig: '#e8588f', chick: '#e9ab00', sheep: '#e9dfc2', frog: '#35a032', duck: '#2f86d6', cow: '#3a1a0b', bunny: '#6f7a88', hen: '#e05a12', blacksheep: '#24262c', goat: '#8a5ad0' };
+  const SCENERY = ['tree', 'pond', 'garden', 'bush', 'hay', 'flowers'];
   const img = {};
   const kname = (k) => (typeof k === 'number' ? KINDS[k] : k);
   function load(onProgress) {
-    const list = KINDS.map((k) => [k, 'assets/' + k + '.webp']).concat([['grass', 'assets/grass.jpg'], ['dirt', 'assets/dirt.jpg'], ['wood', 'assets/wood.jpg'], ['fence', 'assets/fence.webp']]);
+    const list = KINDS.map((k) => [k, 'assets/' + k + '.webp']).concat([['grass', 'assets/grass.jpg'], ['dirt', 'assets/dirt.jpg'], ['wood', 'assets/wood.jpg'], ['fence', 'assets/fence.webp']]).concat(SCENERY.map((k) => [k, 'assets/sc_' + k + '.webp']));
     let done = 0;
     return Promise.all(list.map(([key, src]) => new Promise((res) => {
       const im = new Image(); im.onload = () => { img[key] = im; done++; onProgress && onProgress(done / list.length); res(); };
@@ -71,5 +74,5 @@
     if (!p) { const sz = Math.max(32, Math.round(unitPx * tileUnits)); const cv = document.createElement('canvas'); cv.width = cv.height = sz; const g = cv.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(im, 0, 0, sz, sz); p = { cv, sz }; patterns[k] = p; }
     return c.createPattern(p.cv, 'repeat');
   }
-  root.BPArt = { KINDS, INFO, img, load, drawAnimal, drawMystery, pattern, rr, kname };
+  root.BPArt = { KINDS, INFO, FLOOR, SCENERY, img, load, drawAnimal, drawMystery, pattern, rr, kname };
 })(this);

@@ -35,7 +35,7 @@
       empty: level < C.EMPTY_DROP_LEVEL ? C.EMPTY_START : C.EMPTY_END,
       merge: lerp(C.MERGE_START, C.MERGE_END, t(1, C.MERGE_RAMP)),
       mystery: level < C.MYSTERY_FROM ? 0 : lerp(C.MYSTERY_START, C.MYSTERY_MAX, t(C.MYSTERY_FROM, C.MYSTERY_RAMP)),
-      presets: level < C.PRESET_FROM ? 0 : Math.min(C.PRESET_MAX, 1 + Math.floor((level - C.PRESET_FROM) / C.PRESET_EVERY)),
+      presets: level < C.PRESET_FROM ? 0 : level < C.PRESET_MORE_FROM ? C.PRESET_START : C.PRESET_MAX,
     };
   }
 
@@ -47,7 +47,7 @@
     const nt = Math.ceil(nBarns / 2), nb = nBarns - nt;
     const per = Math.max(nt, nb);
     const W = per * STEP + 0.6;
-    const top0 = 0.3, yT = top0 + BARN_H + LANE / 2, yB = yT + LANE + MID, H = yB + LANE / 2 + BARN_H + 0.3;
+    const top0 = 0.75, yT = top0 + BARN_H + LANE / 2, yB = yT + LANE + MID, H = yB + LANE / 2 + BARN_H + 0.75; // room for the color badges
     const xl = 0.55, xr = W - 0.55;
     // loop polyline, clockwise: top lane left->right, right side down, bottom lane right->left, left side up
     const pts = [];
@@ -82,7 +82,17 @@
   // ---------- rules on a compact board (used by generator, solver and tests) ----------
   // board = { cells: [[k,...] bottom->top], cap: [16..], preset: [k|null], n } ; barns are in loop order
   function topRun(cells) { const n = cells.length; if (!n) return { k: -1, run: 0 }; const k = cells[n - 1]; let r = 0; for (let i = n - 1; i >= 0 && cells[i] === k; i--) r++; return { k, run: r }; }
-  function canPark(board, b, k) { const c = board.cells[b]; return c.length < board.cap[b] && (board.preset[b] == null || board.preset[b] === k) && (!c.length || c[c.length - 1] === k); }
+  // Where may a parading animal of kind k park?
+  //  - if some barn is designated for k: ONLY that barn (when its front is k, or it is empty) - never empty or extra barns
+  //  - otherwise: a barn whose front is k (with room), and an empty undesignated barn only when no such home exists
+  function canPark(board, b, k) {
+    const c = board.cells[b]; if (c.length >= board.cap[b]) return false;
+    if (board.preset.indexOf(k) >= 0) return board.preset[b] === k && (!c.length || c[c.length - 1] === k);
+    if (board.preset[b] != null) return false;
+    if (c.length) return c[c.length - 1] === k;
+    for (let i = 0; i < board.cells.length; i++) { const d = board.cells[i]; if (d.length && d.length < board.cap[i] && board.preset[i] == null && d[d.length - 1] === k) return false; }
+    return true;
+  }
   function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP) return false; for (const x of cells) if (x !== cells[0]) return false; return true; }
   // One tap on the compact board. circ = {kind: count} of animals left circling (nowhere to park yet).
   // Only barn X changes when you tap it, so the result is the same however the parade is spaced, as long as
@@ -102,10 +112,19 @@
       const want = Object.keys(nc).filter((c) => nc[c] > 0 && canPark(nb, X, +c));
       if (want.length > 1 || (want.length === 1 && +want[0] !== d && canPark(nb, X, d))) return null;
     }
-    let left = n;
+    let left = n, usedHome = false;
     for (let j = 0; j < n; j++) {
       let placed = false;
-      for (let st = 1; st <= N; st++) { const t = (X + st) % N; if (canPark(nb, t, d)) { nb.cells[t].push(d); placed = true; break; } }
+      for (let st = 1; st <= N; st++) {
+        const t = (X + st) % N;
+        if (canPark(nb, t, d)) {
+          // a home filled up mid-group and the rest would fall back to an empty barn: in the live parade that
+          // depends on spacing (they may already be past it), so the solver avoids these taps
+          if (!nb.cells[t].length && usedHome) return null;
+          if (nb.cells[t].length) usedHome = true;
+          nb.cells[t].push(d); placed = true; break;
+        }
+      }
       if (!placed) break; left--;
     }
     if (left) nc[d] = (nc[d] || 0) + left;
@@ -184,9 +203,17 @@
       const end = replay(lv.board, lv.solution);     // double-check the found win against the rules
       if (!end || !boardWon(end.board, end.circ)) continue;
       lv.layout = makeLayout(lv.board.cells.length);
+      if (!liveCheck(lv)) { lv.layout = null; continue; }
       cache[level] = lv; return lv;
     }
     throw new Error('could not generate level ' + level);
+  }
+
+  // replay the solution through the real-time parade (tap, let it settle) to be sure it wins there too
+  function liveCheck(lv) {
+    const S = newGame(lv);
+    for (const b of lv.solution) { if (!tap(S, b).ok) return false; settle(S); if (S.status === 'lost') return false; }
+    return S.status === 'won';
   }
 
   // ---------- live game (real-time loop) ----------
@@ -202,10 +229,27 @@
     S.nextId = nextId;
     S.barns.forEach((B) => { B.cleared = isCleared(B.cells.map((a) => a.k), B.cap); });
     S.layoutRef = lv.layout;
+    revealFront(S, null);
     return S;
   }
   const trackCount = (S) => S.track.length + S.barns.reduce((a, B) => a + B.queue.length, 0);
-  function barnCanPark(B, k) { const c = B.cells; return c.length < B.cap && (B.preset == null || B.preset === k) && (!c.length || c[c.length - 1].k === k); }
+  function barnCanPark(B, k, S) {
+    const c = B.cells; if (c.length >= B.cap) return false;
+    const bs = S ? S.barns : [B];
+    if (bs.some((X) => X.preset === k)) return B.preset === k && (!c.length || c[c.length - 1].k === k);
+    if (B.preset != null) return false;
+    if (c.length) return c[c.length - 1].k === k;
+    for (const X of bs) { const d = X.cells; if (d.length && d.length < X.cap && X.preset == null && d[d.length - 1].k === k) return false; }
+    return true;
+  }
+  // the front pair (row nearest the track) is never a mystery
+  function revealFront(S, ev) {
+    for (const B of S.barns) {
+      const c = B.cells; if (!c.length) continue;
+      const row = Math.floor((c.length - 1) / 2); let from = row * 2; if (c.length - from < 2) from = Math.max(0, from - 1);
+      for (let i = from; i < c.length; i++) if (c[i].mystery) { c[i].mystery = false; S.revealed[c[i].id] = 1; if (ev) ev.push({ type: 'reveal', barn: B.id, id: c[i].id }); }
+    }
+  }
   function frontGroup(B) { const c = B.cells; if (!c.length) return { k: -1, run: 0 }; const k = c[c.length - 1].k; let r = 0; for (let i = c.length - 1; i >= 0 && c[i].k === k; i--) r++; return { k, run: r }; }
   function snapshot(S) { const { history, layoutRef, ...rest } = S; return clone(rest); }
   function pushHistory(S) { S.history.push(snapshot(S)); if (S.history.length > 60) S.history.shift(); }
@@ -223,6 +267,7 @@
     const events = [{ type: 'exit', barn: b, k, n, split: n < run, animals: out }];
     if (B.cleared) { B.cleared = false; events.push({ type: 'unclear', barn: b }); }
     S.moves++;
+    revealFront(S, events);
     return { ok: true, n, k, split: n < run, events };
   }
   // Advance the parade by dt seconds. Returns events (enter, park, clear, reveal, won, lost).
@@ -264,7 +309,7 @@
         a.s = mod(nw[i], L);
         if (moved <= 0) continue;
         let hit = null, hd = 1e9;
-        for (const { B, d } of docks) { const dd = mod(d - old[i], L); if (dd > 0 && dd <= moved + 1e-9 && dd < hd && barnCanPark(B, a.k)) { hit = B; hd = dd; } }
+        for (const { B, d } of docks) { const dd = mod(d - old[i], L); if (dd > 0 && dd <= moved + 1e-9 && dd < hd && barnCanPark(B, a.k, S)) { hit = B; hd = dd; } }
         if (hit) {
           parked.add(a.id);
           const top = hit.cells[hit.cells.length - 1];
@@ -279,12 +324,12 @@
     updateStatus(S, ev);
     return ev;
   }
-  function anyParkable(S) { for (const a of S.track) for (const B of S.barns) if (barnCanPark(B, a.k)) return true; return false; }
+  function anyParkable(S) { for (const a of S.track) for (const B of S.barns) if (barnCanPark(B, a.k, S)) return true; return false; }
   function updateStatus(S, ev) {
     const queued = S.barns.some((B) => B.queue.length);
     // zoom when every barn is single-colored and every parading animal has a home waiting
     S.zoom = !queued && S.track.length > 0 && S.barns.every((B) => !B.cells.length || B.cells.every((a) => a.k === B.cells[0].k)) &&
-      S.track.every((a) => S.barns.some((B) => barnCanPark(B, a.k))) && S.barns.every((B) => !B.temp || !B.cells.length);
+      S.track.every((a) => S.barns.some((B) => barnCanPark(B, a.k, S))) && S.barns.every((B) => !B.temp || !B.cells.length);
     if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
     if (!queued && trackCount(S) >= S.cap && !anyParkable(S)) { S.status = 'lost'; S.reason = 'full'; if (ev) ev.push({ type: 'lost' }); }
   }
@@ -309,6 +354,7 @@
     for (const B of S.barns) for (const a of B.cells.concat(B.queue)) if (keep[a.id]) a.mystery = false;
     while (S.barns.filter((B) => B.temp).length < temps) addTempBarnRaw(S);
     S.status = 'play'; S.reason = null;
+    revealFront(S, null);
     return true;
   }
   function plus2(S) { const maxCap = Math.floor(S.L / C.GAP) - 1; if (S.cap + C.PLUS2_AMOUNT > maxCap) return false; S.cap += C.PLUS2_AMOUNT; S.plus2++; S.used++; if (S.status === 'lost') { S.status = 'play'; S.reason = null; } return true; }
@@ -323,7 +369,7 @@
     const gone = [];
     for (const B of S.barns) { B.cells = B.cells.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); B.queue = B.queue.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); }
     S.track = S.track.filter((a) => (a.k === k ? (gone.push({ id: a.id, s: a.s }), false) : true));
-    S.removed.push(k); S.used++;
+    S.removed.push(k); S.used++; revealFront(S, null);
     for (const B of S.barns) { if (B.preset === k) B.preset = null; B.cleared = !B.temp && isCleared(B.cells.map((x) => x.k), B.cap); }
     if (S.status === 'lost') { S.status = 'play'; S.reason = null; }
     updateStatus(S, null);
@@ -355,6 +401,7 @@
       } else break;
     }
     bs.forEach((B, j) => { B.cells = best[j]; });
+    revealFront(S, null);
     S.used++;
     return true;
   }
@@ -372,6 +419,6 @@
   return {
     KINDS, CONFIG: C, mulberry32, levelParams, makeLayout, pointAt, topRun, canPark, isCleared, tapBoard, boardWon, solve, replay,
     genAttempt, generateLevel, newGame, tap, step, settle, trackCount, barnCanPark, frontGroup, redo, plus2, magnet, addTempBarn,
-    shuffleColors, setSolverWeights, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
+    shuffleColors, setSolverWeights, revealFront, liveCheck, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
   };
 });

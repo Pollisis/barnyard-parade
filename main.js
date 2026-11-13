@@ -166,7 +166,21 @@
     } else if (k === 'barn') { const B = G.addTempBarn(S); ok = !!B; if (!B) toast('Only ' + C.TEMP_BARN_MAX + ' extra barns fit'); else popups.push({ text: 'Extra barn!', x: lay.temps[B.tempIndex].x + 1.1, y: lay.temps[B.tempIndex].y + 0.8, t: 0 }); }
     if (ok) { save.bank[k]--; persist(); AU.fx.power(); ended = false; hud(); }
   }
-  document.querySelectorAll('.pw').forEach((b) => b.addEventListener('click', () => usePower(b.dataset.pw)));
+  const PW_DESC = {
+    redo: 'Puts the last group you sent out back in its barn.',
+    shuffle: 'Mixes up the colors in every barn that is not sorted yet.',
+    plus2: 'Makes room for 2 more animals on the parade. Use it again for more.',
+    magnet: 'Pulls every animal of one random color off the farm.',
+    barn: 'Adds a small extra barn that holds 4 animals (color-locked animals still go only to their own barn).',
+  };
+  function confirmPower(k) {
+    AU.ensure(); AU.fx.click();
+    if (!S || S.status === 'won') return;
+    const n = save.bank[k] || 0;
+    const body = '<p class="pw-desc">' + PW_DESC[k] + '</p><p class="pw-left">' + (n > 0 ? 'You have <b>' + n + '</b> left.' : 'You have none left. Clear levels to earn more (they are free).') + '</p>';
+    modal(PW_NAME[k], body, n > 0 ? [{ label: 'Cancel', cls: 'grey', id: 'pw-cancel', fn: closeModal }, { label: 'Use', id: 'pw-use', fn: () => { closeModal(); usePower(k); } }] : [{ label: 'OK', id: 'pw-cancel', fn: closeModal }]);
+  }
+  document.querySelectorAll('.pw').forEach((b) => b.addEventListener('click', () => confirmPower(b.dataset.pw)));
   $('#btn-restart').addEventListener('click', () => { AU.fx.click(); if (modalOpen) closeModal(); if (save.current) startLevel(save.current); });
   $('#btn-settings').addEventListener('click', () => { AU.fx.click(); showSettings(); });
 
@@ -219,9 +233,9 @@
   function showHelp() {
     save.seenHelp = true; persist();
     modal('How to play', '<p><b>Tap a barn</b> to send its front animals out. A matching group leaves together (4 ducks in a row = 4 ducks).</p>' +
-      '<p>They <b>parade around the loop</b> and park by themselves next to a matching animal, or in an empty barn.</p>' +
+      '<p>They <b>parade around the loop</b> and park by themselves next to a matching animal. Only if their kind has no barn do they take an empty one.</p>' +
       '<p>Fill a barn with <b>16 of one animal</b> and a fence closes it. Sort every barn to win!</p>' +
-      '<p>The sign shows how many are parading (x/16). If it is full and nobody can park, the level is over. <b>?</b> boxes are a surprise until they leave. A colored barn only takes that animal.</p>' +
+      '<p>The sign shows how many are parading (x/16). If it is full and nobody can park, the level is over. <b>?</b> boxes are a surprise until they leave. A <b>colored barn</b> only takes its animal, and that animal can park nowhere else.</p>' +
       '<p>Power-ups are free, earned by playing, and saved between levels.</p>',
     [{ label: "Let's play!", fn: closeModal }]);
   }
@@ -257,14 +271,45 @@
 
   // ---------- drawing ----------
   const rr = ART.rr;
-  function drawGround(c) {
+  // grass + farm scenery, drawn once per level/size into an offscreen canvas
+  let ground = null, groundKey = '';
+  const SC_SIZE = { tree: 3.4, pond: 4.6, garden: 3.8, bush: 1.9, hay: 1.4, flowers: 1.3 };
+  function placeScenery() {
+    const r = G.mulberry32(((S ? S.level : 1) * 7919 + 13) >>> 0), u = view.u, out = [];
+    const bx0 = view.ox - 0.25 * u, by0 = view.oy - 0.25 * u, bx1 = view.ox + (lay.W + 0.25) * u, by1 = view.oy + (lay.H + 0.25) * u;
+    const hitsBoard = (x, y, rad) => { const cx = Math.max(bx0, Math.min(x, bx1)), cy = Math.max(by0, Math.min(y, by1)); return Math.hypot(x - cx, y - cy) < rad; };
+    const order = ['tree', 'pond', 'garden', 'tree', 'garden', 'pond', 'tree', 'hay', 'hay', 'bush', 'bush', 'bush', 'flowers', 'flowers', 'flowers', 'hay', 'bush', 'flowers', 'tree', 'bush', 'flowers', 'hay', 'flowers', 'bush', 'flowers', 'flowers'];
+    for (const k of order) {
+      const im = ART.img[k]; if (!im) continue;
+      for (let t = 0; t < 40; t++) {
+        const sz = SC_SIZE[k] * u * (0.85 + r() * 0.3); const w = sz, h = sz * im.height / im.width; const rad = Math.max(w, h) * 0.42;
+        const x = -w * 0.25 + r() * (view.w + w * 0.5), y = -h * 0.25 + r() * (view.h + h * 0.5);
+        if (hitsBoard(x, y, rad * 0.95)) continue;
+        if (out.some((o) => Math.hypot(o.x - x, o.y - y) < (o.rad + rad) * 0.9)) continue;
+        out.push({ k, x, y, w, h, rad, rot: (k === 'garden' || k === 'pond') ? (r() - 0.5) * 0.3 : r() * Math.PI * 2 }); break;
+      }
+    }
+    return out;
+  }
+  function buildGround() {
+    const g = document.createElement('canvas'); g.width = cv.width; g.height = cv.height; const c = g.getContext('2d');
     const u = view.u;
     const gp = ART.pattern(c, 'grass', u * view.dpr, 7);
-    c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
-    if (gp) { c.fillStyle = gp; c.fillRect(0, 0, cv.width, cv.height); } else { c.fillStyle = '#7cc95a'; c.fillRect(0, 0, cv.width, cv.height); }
-    const vg = c.createRadialGradient(cv.width / 2, cv.height / 2, cv.height * 0.2, cv.width / 2, cv.height / 2, cv.height * 0.75); vg.addColorStop(0, 'rgba(255,255,230,0.10)'); vg.addColorStop(1, 'rgba(20,60,10,0.25)');
-    c.fillStyle = vg; c.fillRect(0, 0, cv.width, cv.height);
-    c.restore();
+    if (gp) { c.fillStyle = gp; c.fillRect(0, 0, g.width, g.height); } else { c.fillStyle = '#7cc95a'; c.fillRect(0, 0, g.width, g.height); }
+    const vg = c.createRadialGradient(g.width / 2, g.height / 2, g.height * 0.2, g.width / 2, g.height / 2, g.height * 0.75); vg.addColorStop(0, 'rgba(255,255,230,0.10)'); vg.addColorStop(1, 'rgba(20,60,10,0.25)');
+    c.fillStyle = vg; c.fillRect(0, 0, g.width, g.height);
+    c.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    for (const o of placeScenery()) {
+      c.save(); c.translate(o.x, o.y);
+      c.fillStyle = 'rgba(20,50,10,0.22)'; c.beginPath(); c.ellipse(o.w * 0.06, o.h * 0.08, o.w * 0.46, o.h * 0.44, 0, 0, Math.PI * 2); c.fill();
+      c.rotate(o.rot); c.drawImage(ART.img[o.k], -o.w / 2, -o.h / 2, o.w, o.h); c.restore();
+    }
+    ground = g;
+  }
+  function drawGround(c) {
+    const key = (S ? S.level : 0) + ':' + cv.width + 'x' + cv.height + ':' + view.u.toFixed(2);
+    if (key !== groundKey || !ground) { buildGround(); groundKey = key; }
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(ground, 0, 0); c.restore();
   }
   function tracePath(c) { c.beginPath(); lay.pts.forEach((p, i) => { const q = toPx(p.x, p.y); i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y); }); c.closePath(); }
   function drawTrack(c) {
@@ -286,11 +331,21 @@
     // frame
     const fg = c.createLinearGradient(0, 0, w, 0); fg.addColorStop(0, '#8a5427'); fg.addColorStop(0.5, '#b07035'); fg.addColorStop(1, '#7c4a20');
     c.fillStyle = fg; rr(c, 0, 0, w, h, u * 0.2); c.fill();
-    if (B.preset != null) { c.strokeStyle = ART.INFO[kindName(B.preset)].color; c.lineWidth = u * 0.14; rr(c, u * 0.03, u * 0.03, w - u * 0.06, h - u * 0.06, u * 0.18); c.stroke(); }
-    // plank floor
+    const pk = B.preset != null ? kindName(B.preset) : null;
+    // plank floor (color-locked barns get a floor in their animal's color, with the wood grain showing through)
     const wp = ART.pattern(c, 'wood', u, 4);
-    c.fillStyle = wp || '#9a6a3a'; rr(c, u * 0.12, u * 0.12, w - u * 0.24, h - u * 0.24, u * 0.1); c.fill();
-    if (B.preset != null) { c.fillStyle = ART.INFO[kindName(B.preset)].color; c.globalAlpha = 0.22; rr(c, u * 0.12, u * 0.12, w - u * 0.24, h - u * 0.24, u * 0.1); c.fill(); c.globalAlpha = 1; }
+    const fx = u * 0.12, fy = u * 0.12, fw = w - u * 0.24, fh = h - u * 0.24;
+    c.fillStyle = wp || '#9a6a3a'; rr(c, fx, fy, fw, fh, u * 0.1); c.fill();
+    if (pk) {
+      c.save(); rr(c, fx, fy, fw, fh, u * 0.1); c.clip();
+      c.fillStyle = ART.FLOOR[pk]; c.globalAlpha = 0.86; c.fillRect(fx, fy, fw, fh);
+      c.globalAlpha = 0.12; c.fillStyle = '#fff';
+      for (let x = -fh; x < fw; x += u * 0.7) { c.beginPath(); c.moveTo(fx + x, fy); c.lineTo(fx + x + u * 0.3, fy); c.lineTo(fx + x + u * 0.3 + fh, fy + fh); c.lineTo(fx + x + fh, fy + fh); c.closePath(); c.fill(); }
+      c.restore();
+      // thick colored rim with a white keyline
+      c.strokeStyle = ART.INFO[pk].color === '#f4f1e8' ? '#d8ccaa' : ART.INFO[pk].color; c.lineWidth = u * 0.24; rr(c, u * 0.05, u * 0.05, w - u * 0.1, h - u * 0.1, u * 0.17); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,0.85)'; c.lineWidth = u * 0.05; rr(c, u * 0.19, u * 0.19, w - u * 0.38, h - u * 0.38, u * 0.08); c.stroke();
+    }
     c.fillStyle = 'rgba(0,0,0,0.18)'; c.fillRect(u * 0.12, r.side === 'top' ? u * 0.12 : h - u * 0.2, w - u * 0.24, u * 0.08);
     // open-end lip (where animals come and go)
     c.fillStyle = 'rgba(255,230,170,0.35)'; c.fillRect(u * 0.12, r.side === 'top' ? h - u * 0.16 : u * 0.08, w - u * 0.24, u * 0.06);
@@ -301,8 +356,11 @@
     // preset badge on the closed end
     if (B.preset != null) {
       const bx = P.x + w / 2, by = r.side === 'top' ? P.y + u * 0.05 : P.y + h - u * 0.05;
-      c.save(); c.beginPath(); c.arc(bx, by, u * 0.42, 0, Math.PI * 2); c.fillStyle = '#fff8e8'; c.fill(); c.lineWidth = u * 0.1; c.strokeStyle = ART.INFO[kindName(B.preset)].color; c.stroke(); c.restore();
-      ART.drawAnimal(c, B.preset, bx, by, u * 0.62, 0, { dpr: view.dpr });
+      const pk2 = kindName(B.preset);
+      c.save(); c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = u * 0.15; c.shadowOffsetY = u * 0.05;
+      c.beginPath(); c.arc(bx, by, u * 0.66, 0, Math.PI * 2); c.fillStyle = '#fffdf4'; c.fill(); c.restore();
+      c.save(); c.beginPath(); c.arc(bx, by, u * 0.66, 0, Math.PI * 2); c.lineWidth = u * 0.16; c.strokeStyle = ART.FLOOR[pk2]; c.stroke(); c.restore();
+      ART.drawAnimal(c, B.preset, bx, by, u * 1.0, 0, { dpr: view.dpr });
     }
   }
   function drawFence(c, B) {
@@ -353,6 +411,7 @@
     }
   }
   function frame(tms) {
+    if (cv.clientWidth && (Math.abs(cv.clientWidth - view.w) > 0.5 || Math.abs(cv.clientHeight - view.h) > 0.5)) resize();
     const now = tms / 1000; const rdt = Math.min(0.05, now - (time || now)); time = now;
     if (S && lay) {
       if (!modalOpen || S.status !== 'play') {
@@ -398,6 +457,7 @@
     requestAnimationFrame(frame);
   }
   window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => { setTimeout(resize, 120); setTimeout(resize, 500); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) AU.stopMusic(); });
 
   // ---------- test hooks ----------

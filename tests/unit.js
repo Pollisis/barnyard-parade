@@ -112,52 +112,64 @@ const fill = (k, n) => new Array(n).fill(k);
   G.tap(S, 0); G.settle(S);
   ok(B.cells.length === 4 && S.track.length === 2, 'extra barn fills to 4, the rest keep parading');
 }
-// 11. Wild power-up
+// 11. Wild power-up: the front pair turns rainbow, keeps its color and stays put
 {
-  const W = G.WILD;
-  // any color without a barn of its own may park on a wild pair, which then takes that color
+  const WO = G.WOFF;
+  const wild = (B) => B.cells.map((a) => (a.wild ? 'W' : '') + a.k).join();
+  // any color (without a home of its own) may park in front of the rainbow pair; that color then sets the barn
   let S = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [7]]));
-  ok(G.makeWild(S, 0) && kinds(S.barns[0]).join() === [1, 1, W, W].join(), 'wild turns the front pair wild');
+  ok(G.makeWild(S, 0) && wild(S.barns[0]) === '1,1,W2,W2', 'wild pair keeps its animals and color, just rainbow');
   G.tap(S, 1); G.settle(S);
-  ok(kinds(S.barns[0]).join() === '1,1,4,4,4,4' && S.track.length === 0, 'a color with no barn parks on the wild pair and claims it');
-  // a real matching barn still comes first
+  ok(wild(S.barns[0]) === '1,1,W2,W2,4,4' && S.track.length === 0, 'a different color parks in front of the rainbow pair');
+  ok(!G.barnCanPark(S.barns[0], 7, S) && G.barnCanPark(S.barns[0], 4, S), 'after that, only the new color may park there');
+  ok(S.barns[0].cells[3].wild && !S.barns[0].cells[3].open, 'the rainbow stays, but its open-to-anyone power is used up');
+  // the pair still has to go home: once the front leaves, the rainbow pair exits as its own color and goes to its barn
+  S = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [5, 2, 2], [6]]));
+  G.makeWild(S, 0); G.tap(S, 1); G.settle(S);   // 4s park in front of the wild 2s (no 4 barn exists)
+  ok(wild(S.barns[0]) === '1,1,W2,W2,4,4', 'setup: 4s in front of rainbow 2s');
+  G.tap(S, 0); G.settle(S);                       // 4s leave (and keep parading: no 4 barn); rainbow pair is the front again
+  ok(S.track.length === 2 && S.barns[0].cells.length === 4, 'the 4s do not come back to the used-up rainbow pair');
+  ok(S.barns[0].cells[3].wild && S.barns[0].cells[3].k === 2, 'rainbow pair is the front again, still its own color');
+  const r = G.tap(S, 0);
+  ok(r.ok && r.k === 2 && r.n === 2, 'rainbow pair exits as its original color');
+  G.settle(S);
+  ok(kinds(S.barns[2]).join() === '5,2,2,2,2' && S.barns[2].cells.every((a) => !a.wild), 'it goes home to its own color and is a normal animal again');
+  // a real matching barn still comes first, and the rainbow beats an empty barn
   S = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [3, 4]]));
   G.makeWild(S, 0); G.tap(S, 1); G.settle(S);
-  ok(kinds(S.barns[2]).join() === '3,4,4,4' && S.barns[0].cells[3].k === W, 'matching barn beats the wild pair');
-  // wild beats an empty barn
+  ok(kinds(S.barns[2]).join() === '3,4,4,4' && S.barns[0].cells.length === 4, 'matching barn beats the rainbow pair');
   S = G.newGame(mk([[0, 4, 4], [], [1, 2, 2]]));
   G.makeWild(S, 2); G.tap(S, 0); G.settle(S);
-  ok(S.barns[1].cells.length === 0 && kinds(S.barns[2]).join() === '1,4,4,4,4', 'wild pair beats an empty barn');
-  // designated barns can't be made wild, and designated animals never use a wild pair
+  ok(S.barns[1].cells.length === 0 && kinds(S.barns[2]).join() === '1,2,2,4,4', 'rainbow pair beats an empty barn');
+  // targets: never color-locked, extra (+4) or already-wild barns; color-locked animals ignore rainbow pairs
   S = G.newGame(mk([[1, 5, 5], [2, 2, 3, 3], [4, 4]], { preset: [null, null, 5] }));
   ok(G.wildTarget(S, 2) === 'designated' && !G.makeWild(S, 2), 'wild cannot target a color-locked barn');
-  G.makeWild(S, 1); G.tap(S, 0); G.settle(S);
-  ok(S.track.length === 2 && S.barns[1].cells[3].k === W, 'color-locked animals ignore wild pairs');
-  // tapped out, the wild pair leaves with the group behind it, as that color
+  const T = G.addTempBarn(S); ok(G.wildTarget(S, T.id) === 'temp', 'wild cannot target an extra barn');
+  G.makeWild(S, 1); ok(G.wildTarget(S, 1) === 'already', 'already-wild pair refused');
+  G.tap(S, 0); G.settle(S);
+  ok(S.track.length === 2 && S.barns[1].cells.length === 4, 'color-locked animals ignore rainbow pairs');
+  // tapped out before anything parks: exits as its own color and the wild is used up
   S = G.newGame(mk([[3, 3, 3, 5, 5], [], [1]]));
-  G.makeWild(S, 0); const r = G.tap(S, 0);
-  ok(r.ok && r.n === 5 && r.k === 3 && S.barns[0].queue.every((a) => a.k === 3), 'wild pair exits with the group behind it, as that color');
-  // a barn of only wild animals stays put
-  S = G.newGame(mk([[1, 2], [3]]));
-  G.makeWild(S, 0);
-  ok(G.tap(S, 0).why === 'wild', 'a barn of only wild animals cannot be tapped');
-  // the claimed pair counts toward 16, and the level can still be finished
-  S = G.newGame(mk([[].concat(fill(6, 12), [2, 2]), [0, 6, 6], [2, 2], fill(0, 1)]));
+  G.makeWild(S, 0); const r2 = G.tap(S, 0);
+  ok(r2.ok && r2.n === 2 && r2.k === 5 && S.barns[0].queue.every((a) => a.k === 5 && !a.wild), 'tapped out early: leaves as its own color, wild used up');
+  // clearing is strictly 16 of one original color
+  S = G.newGame(mk([[].concat(fill(6, 12), [2, 2]), [0, 6, 6], [2, 2]]));
   G.makeWild(S, 0); G.tap(S, 1); G.settle(S);
-  ok(S.barns[0].cleared && S.barns[0].cells.length === 16, 'claimed wild pair counts toward the 16');
+  ok(S.barns[0].cells.length === 16 && !S.barns[0].cleared, 'a barn with a rainbow pair of another color is not cleared');
   // redo undoes it
   S = G.newGame(mk([[1, 1, 2, 2], [3]]));
   G.makeWild(S, 0);
-  ok(G.redo(S) && kinds(S.barns[0]).join() === '1,1,2,2', 'redo undoes a wild');
+  ok(G.redo(S) && S.barns[0].cells.every((a) => !a.wild), 'redo undoes a wild');
   // compact solver rules agree
-  const bd = { cells: [[1, 1, W, W], [0, 4, 4], []], cap: [16, 16, 16], preset: [null, null, null] };
-  ok(G.canPark(bd, 0, 5) && !G.canPark(bd, 2, 5) && !G.canPark(bd, 0, 4), 'solver: home beats wild beats empty');
-  const st = G.tapBoard(bd, {}, 1);
-  ok(st && st.board.cells[0].join() === '1,1,4,4,4,4', 'solver: parking claims the wild pair');
-  const st2 = G.tapBoard({ cells: [[3, 3, W, W], [], [5]], cap: [16, 16, 16], preset: [null, null, null] }, {}, 0);
-  ok(st2 && st2.board.cells[1].join() === '3,3,3,3', 'solver: wild pair leaves as the group behind it');
-  ok(G.boardWon({ cells: [fill(6, 16), [6, 6], fill(2, 14)], cap: [16, 16, 16], preset: [null, null, null] }, {}), 'solver: a level with 18/14 split colors can still be won');
-  ok(!G.boardWon({ cells: [fill(6, 8), fill(6, 8)], cap: [16, 16], preset: [null, null] }, {}), 'solver: 16 split over two barns is not a win');
+  const bd = { cells: [[1, 1, 2 + WO, 2 + WO], [0, 4, 4], []], cap: [16, 16, 16], preset: [null, null, null] };
+  ok(G.canPark(bd, 0, 5) && !G.canPark(bd, 2, 5) && !G.canPark(bd, 0, 4) && G.canPark(bd, 0, 2), 'solver: home beats rainbow beats empty; own color still fits');
+  const st = G.tapBoard({ cells: [[1, 1, 2 + WO, 2 + WO], [0, 5, 5], []], cap: [16, 16, 16], preset: [null, null, null] }, {}, 1);
+  ok(st && st.board.cells[0].join() === '1,1,2,2,5,5', 'solver: parks in front of the rainbow pair (which keeps its color; its open power used up)');
+  const st2 = G.tapBoard({ cells: [[3, 3, 5 + WO, 5 + WO], [], [5]], cap: [16, 16, 16], preset: [null, null, null] }, {}, 0);
+  ok(st2 && st2.board.cells[2].join() === '5,5,5', 'solver: rainbow pair leaves as its own color and goes home');
+  ok(G.topRun([4, 2 + WO, 2 + WO, 2]).run === 3 && G.isCleared(fill(6, 14).concat([6 + WO, 6 + WO]), 16), 'solver: rainbow animals count as their own color');
+  const fromLive = (() => { const S2 = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [2]])); G.makeWild(S2, 0); const b0 = G.boardOf(S2); G.tap(S2, 1); G.settle(S2); const sb = G.tapBoard(b0, {}, 1); return JSON.stringify(sb.board.cells) === JSON.stringify(G.boardOf(S2).cells); })();
+  ok(fromLive, 'solver and live parade agree with a rainbow pair');
 }
 // 12. compact rules (solver) match the real-time parade
 {

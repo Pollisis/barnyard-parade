@@ -118,7 +118,7 @@ async function play(p, stop) {
   const wt = await page.evaluate(() => { const S = window.__bp.S; return { ok: S.barns.findIndex((B) => !window.BPGame.wildTarget(S, B.id)), des: S.barns.findIndex((B) => B.preset != null) }; });
   if (wt.des >= 0) { await tapBarn(page, wt.des); await page.waitForTimeout(150); check(await page.evaluate(() => window.__bp.wildPick && window.__bp.save.bank.wild === 1), 'wild: a color-locked barn is refused'); }
   await tapBarn(page, wt.ok); await page.waitForTimeout(250);
-  check(await page.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return !window.__bp.wildPick && window.__bp.save.bank.wild === 0 && c[c.length - 1].k === window.BPGame.WILD; }, wt.ok), 'wild: front pair turned wild and the charge used');
+  check(await page.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return !window.__bp.wildPick && window.__bp.save.bank.wild === 0 && c[c.length - 1].wild; }, wt.ok), 'wild: front pair turned wild and the charge used');
   await page.screenshot({ path: out + '/06-after-power-ups.png' });
 
   // game over when the parade is full with nowhere to go
@@ -164,12 +164,31 @@ async function play(p, stop) {
   await tp.click('.pw[data-pw="wild"]'); await tp.waitForTimeout(250);
   await tp.screenshot({ path: out + '/11a-ipad-wild-confirm.png' });
   await tp.click('#pw-use'); await tp.waitForTimeout(200);
-  const tgt = await tp.evaluate(() => window.__bp.S.barns.findIndex((B) => !B.temp && B.preset == null && B.cells.length > 4 && !window.BPGame.wildTarget(window.__bp.S, B.id)));
-  await tapBarn(tp, tgt); await tp.waitForTimeout(600);
-  check(await tp.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return c[c.length - 1].k === window.BPGame.WILD && c[c.length - 2].k === window.BPGame.WILD; }, tgt), 'iPad: wild pair made');
+  // pick a barn X to turn rainbow, and a barn Y whose front color has no barn of its own
+  const plan = await tp.evaluate(() => {
+    const S = window.__bp.S, G = window.BPGame, des = new Set(S.barns.map((B) => B.preset).filter((k) => k != null));
+    const top = (B) => B.cells.length ? B.cells[B.cells.length - 1].k : null;
+    for (const X of S.barns) {
+      if (G.wildTarget(S, X.id) || X.cells.length < 4) continue;
+      for (const Y of S.barns) {
+        if (Y === X || !Y.cells.length || Y.cleared) continue;
+        const c = top(Y); if (des.has(c) || c === top(X)) continue;
+        if (S.barns.some((B) => B !== Y && B.preset == null && B.cells.length && B.cells.length < B.cap && top(B) === c)) continue;
+        return { x: X.id, y: Y.id, c };
+      }
+    }
+    return null;
+  });
+  check(!!plan, 'found a rainbow scenario on level 21');
+  await tapBarn(tp, plan.x); await tp.waitForTimeout(400);
+  check(await tp.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return c[c.length - 1].wild && c[c.length - 2].wild; }, plan.x), 'iPad: rainbow pair made, same animals');
   await tp.screenshot({ path: out + '/11b-ipad-wild-pair.png' });
-  // a homeless color joins the wild pair (if one comes by) - run the parade a bit
-  await tp.evaluate(() => { window.__bp.speed = 4; }); await tp.waitForTimeout(2500); await tp.evaluate(() => { window.__bp.speed = 1; });
+  await tapBarn(tp, plan.y);
+  await tp.waitForFunction((p) => { const c = window.__bp.S.barns[p.x].cells; return c.length && c[c.length - 1].k === p.c && !c[c.length - 1].wild; }, plan, { timeout: 20000 });
+  const front = await tp.evaluate((p) => { const c = window.__bp.S.barns[p.x].cells; let i = c.length - 1; while (i >= 0 && c[i].k === p.c && !c[i].wild) i--; return { wild: !!(c[i] && c[i].wild), own: c[i] && c[i].k }; }, plan);
+  check(front.wild && front.own !== plan.c, 'iPad: a different color parked in front of the rainbow pair');
+  await tp.waitForTimeout(500);
+  await tp.screenshot({ path: out + '/11c-ipad-other-color-in-front-of-rainbow.png' });
   await tp.click('.pw[data-pw="barn"]'); await tp.waitForTimeout(300);
   await tp.screenshot({ path: out + '/11-ipad-powerup-confirm.png' });
   await tp.click('#pw-cancel');
@@ -183,6 +202,29 @@ async function play(p, stop) {
   await lp.goto(url); await ready(lp);
   check(await lp.evaluate(() => { const r = document.querySelector('#board').getBoundingClientRect(); const a = window.__bp.barnScreen(0), z = window.__bp.barnScreen(window.__bp.S.barns.length - 1); return a.y > r.top && z.y < r.bottom; }), 'landscape start: whole board fits');
   await lp.screenshot({ path: out + '/13-ipad-landscape-level18.png' });
+
+  // Wild end to end on iPad: different color parks in front, leaves, then the rainbow pair goes home
+  const wp = await tab.newPage(); wp.on('pageerror', (e) => consoleErr.push(e.message));
+  await wp.goto(url); await ready(wp);
+  await wp.evaluate(() => {
+    const G = window.BPGame; const cells = [[1, 1, 1, 1, 2, 2], [0, 0, 4, 4], [3, 3, 2, 2], [], [5, 5], [6, 6]];
+    window.__bp.custom({ n: 3, board: { cells, cap: cells.map(() => 16), preset: cells.map(() => null) }, mystery: cells.map((c) => c.map(() => false)), layout: G.makeLayout(cells.length) });
+    window.__bp.save.bank.wild = 1; window.__bp.speed = 3;
+  });
+  await usePw(wp, 'wild'); await tapBarn(wp, 0); await wp.waitForTimeout(200);
+  await tapBarn(wp, 1);
+  await wp.waitForFunction(() => window.__bp.S.track.length === 0 && window.__bp.S.barns.every((B) => !B.queue.length), null, { timeout: 20000 });
+  const k1 = await wp.evaluate(() => window.__bp.S.barns[0].cells.map((a) => (a.wild ? 'W' : '') + a.k).join());
+  check(k1 === '1,1,1,1,W2,W2,4,4', 'scenario: 4s parked in front of the rainbow 2s (' + k1 + ')');
+  await wp.waitForTimeout(1900); await wp.screenshot({ path: out + '/14-wild-scenario-parked.png' });
+  await tapBarn(wp, 0);
+  await wp.waitForFunction(() => window.__bp.S.track.length === 0 && window.__bp.S.barns.every((B) => !B.queue.length), null, { timeout: 20000 });
+  check(await wp.evaluate(() => window.__bp.S.barns[3].cells.map((a) => a.k).join() === '4,4'), 'scenario: the 4s left for the empty barn (not back to the rainbow pair)');
+  await tapBarn(wp, 0);
+  await wp.waitForFunction(() => window.__bp.S.track.length === 0 && window.__bp.S.barns.every((B) => !B.queue.length), null, { timeout: 20000 });
+  const home = await wp.evaluate(() => ({ b2: window.__bp.S.barns[2].cells.map((a) => (a.wild ? 'W' : '') + a.k).join(), b0: window.__bp.S.barns[0].cells.map((a) => a.k).join() }));
+  check(home.b2 === '3,3,2,2,2,2' && home.b0 === '1,1,1,1', 'scenario: rainbow pair went home to the 2s barn as normal animals (' + JSON.stringify(home) + ')');
+  await wp.screenshot({ path: out + '/15-wild-scenario-home.png' });
 
   check(consoleErr.length === 0, 'no console errors' + (consoleErr.length ? ': ' + consoleErr.slice(0, 3).join(' | ') : ''));
   await browser.close();

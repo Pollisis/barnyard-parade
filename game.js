@@ -26,7 +26,8 @@
   const ri = (r, a, b) => a + Math.floor(r() * (b - a + 1));
   function shuffle(r, arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  const WILD = -2;
+  const WOFF = 100; // compact wild animals retain kind k as k + WOFF
+  const base = (k) => k >= WOFF ? k - WOFF : k, isW = (k) => k >= WOFF;
   const mod = (a, n) => ((a % n) + n) % n;
 
   function levelParams(level) {
@@ -83,46 +84,32 @@
 
   // ---------- rules on a compact board (used by generator, solver and tests) ----------
   // board = { cells: [[k,...] bottom->top], cap: [16..], preset: [k|null], n } ; barns are in loop order
-  // WILD (-2) = an unclaimed wild animal; wild cells are only ever at the front of a barn.
-  // The front group = any wild cells plus the run of one color behind them (the wilds leave as that color).
+  // Wild cells retain their color identity; exits strip the wild flag, not the color.
   function topRun(cells) {
-    let i = cells.length - 1, w = 0; while (i >= 0 && cells[i] === WILD) { w++; i--; }
-    if (i < 0) return { k: w ? WILD : -1, run: 0, w };
-    const k = cells[i]; let r = 0; while (i >= 0 && cells[i] === k) { r++; i--; }
-    return { k, run: r + w, w };
+    if (!cells.length) return { k: -1, run: 0 };
+    const k = base(cells[cells.length - 1]); let run = 0;
+    for (let i = cells.length - 1; i >= 0 && base(cells[i]) === k; i--) run++;
+    return { k, run };
   }
   // Where may a parading animal of kind k park?
   //  - if some barn is designated for k: ONLY that barn (when its front is k, or it is empty) - never empty or extra barns
   //  - otherwise: a barn whose front is k (with room), and an empty undesignated barn only when no such home exists
-  //  - wild front: anyone without a matching barn (wild beats empty barns)
-  function frontWith(board, k) { for (let i = 0; i < board.cells.length; i++) { const d = board.cells[i]; if (d.length && d.length < board.cap[i] && board.preset[i] == null && d[d.length - 1] === k) return true; } return false; }
+  //  - a rainbow front accepts a different color without changing its own identity
+  function frontWith(board, k, wild) { return board.cells.some((c,i) => c.length && c.length < board.cap[i] && board.preset[i] == null && (wild ? isW(c[c.length-1]) : base(c[c.length-1]) === k)); }
   function canPark(board, b, k) {
     const c = board.cells[b]; if (c.length >= board.cap[b]) return false;
-    if (board.preset.indexOf(k) >= 0) return board.preset[b] === k && (!c.length || c[c.length - 1] === k);
+    if (board.preset.indexOf(k) >= 0) return board.preset[b] === k && (!c.length || base(c[c.length - 1]) === k);
     if (board.preset[b] != null) return false;
     const top = c.length ? c[c.length - 1] : null;
-    if (top === k) return true;
+    if (top != null && base(top) === k) return true;
     if (frontWith(board, k)) return false;
-    if (top === WILD) return true;
-    if (top != null) return false;
-    return !frontWith(board, WILD);
+    if (top != null) return isW(top);
+    return !frontWith(board, 0, true);
   }
-  function parkCompact(cells, k) { for (let i = cells.length - 1; i >= 0 && cells[i] === WILD; i--) cells[i] = k; cells.push(k); }
-  function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP || cells[0] < 0) return false; for (const x of cells) if (x !== cells[0]) return false; return true; }
-  // A color is done when its animals not in full barns of 16 all sit together in one single-color barn.
-  // (Without wild animals every color has exactly 16, so this is the same as "every barn holds 16 of one kind".)
-  function boardWon(board, circ) {
-    if (circ && Object.keys(circ).length) return false;
-    const loose = {}, where = {}, total = {};
-    board.cells.forEach((c, i) => { for (const x of c) if (x >= 0) total[x] = (total[x] || 0) + 1; if (isCleared(c, board.cap[i])) return; for (const x of c) if (x >= 0) loose[x] = (loose[x] || 0) + 1; });
-    for (let i = 0; i < board.cells.length; i++) {
-      const c = board.cells[i]; if (!c.length || isCleared(c, board.cap[i])) continue;
-      if (c.every((x) => x === WILD)) continue;
-      const k = c[0]; if (k < 0 || !c.every((x) => x === k) || c.length !== loose[k] || total[k] === CAP || where[k] != null) return false;
-      where[k] = i;
-    }
-    return true;
-  }
+  // the first animal to park in front of a rainbow pair uses up its 'anyone may park here' power
+  function parkCompact(cells, k) { for (let i = cells.length - 1; i >= 0 && isW(cells[i]); i--) cells[i] = base(cells[i]); cells.push(k); }
+  function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP) return false; const k = base(cells[0]); return cells.every((x) => base(x) === k); }
+  function boardWon(board, circ) { return (!circ || !Object.keys(circ).length) && board.cells.every((c, i) => !c.length || isCleared(c, board.cap[i])); }
   // One tap on the compact board. circ = {kind: count} of animals left circling (nowhere to park yet).
   // Only barn X changes when you tap it, so the result is the same however the parade is spaced, as long as
   // the tap does not make an empty barn wanted by two different colors (the solver skips those ambiguous taps).
@@ -137,7 +124,7 @@
     const nc = Object.assign({}, circ);
     nb.cells[X].length -= n;
     const N = nb.cells.length;
-    if (!nb.cells[X].length) {
+    if (!nb.cells[X].length || isW(nb.cells[X][nb.cells[X].length - 1])) {
       const want = Object.keys(nc).filter((c) => nc[c] > 0 && canPark(nb, X, +c));
       if (want.length > 1 || (want.length === 1 && +want[0] !== d && canPark(nb, X, d))) return null;
     }
@@ -149,7 +136,7 @@
         if (canPark(nb, t, d)) {
           // a home filled up mid-group and the rest would fall back to an empty barn: in the live parade that
           // depends on spacing (they may already be past it), so the solver avoids these taps
-          const tc = nb.cells[t], home = tc.length && tc[tc.length - 1] === d;
+          const tc = nb.cells[t], home = tc.length && base(tc[tc.length - 1]) === d;
           if (!home && usedHome) return null;
           if (home) usedHome = true;
           parkCompact(tc, d); placed = true; break;
@@ -262,32 +249,22 @@
     return S;
   }
   const trackCount = (S) => S.track.length + S.barns.reduce((a, B) => a + B.queue.length, 0);
-  function liveFrontWith(bs, k) { for (const X of bs) { const d = X.cells; if (d.length && d.length < X.cap && X.preset == null && d[d.length - 1].k === k) return true; } return false; }
+  function liveFrontWith(bs, k, wild) { return bs.some((B) => B.cells.length && B.cells.length < B.cap && B.preset == null && (wild ? B.cells[B.cells.length-1].open : B.cells[B.cells.length-1].k === k)); }
   function barnCanPark(B, k, S) {
     const c = B.cells; if (c.length >= B.cap) return false;
     const bs = S ? S.barns : [B];
     if (bs.some((X) => X.preset === k)) return B.preset === k && (!c.length || c[c.length - 1].k === k);
     if (B.preset != null) return false;
-    const top = c.length ? c[c.length - 1].k : null;
-    if (top === k) return true;
+    const top = c.length ? c[c.length - 1] : null;
+    if (top && top.k === k) return true;
     if (liveFrontWith(bs, k)) return false;
-    if (top === WILD) return true;
-    if (top != null) return false;
-    return !liveFrontWith(bs, WILD);
+    if (top) return !!top.open;
+    return !liveFrontWith(bs, 0, true);
   }
-  // recompute which barns are done (full of 16, or holding every remaining animal of its color); emits clear/unclear
+  // Completion is strictly 16 animals of the same original color again.
   function recomputeCleared(S, ev) {
-    const full = (B) => !B.temp && isCleared(B.cells.map((a) => a.k), B.cap);
-    const loose = {};
-    const add = (a) => { if (a.k >= 0) loose[a.k] = (loose[a.k] || 0) + 1; };
-    for (const B of S.barns) { if (!full(B)) B.cells.forEach(add); B.queue.forEach(add); }
-    S.track.forEach(add);
     for (const B of S.barns) {
-      let now = false;
-      if (!B.temp && B.cells.length) {
-        if (full(B)) now = true;
-        else { const k = B.cells[0].k; now = k >= 0 && S.wildKinds && S.wildKinds[k] && B.cells.every((a) => a.k === k) && B.cells.length === loose[k] && !B.queue.length; }
-      }
+      const now = !B.temp && isCleared(B.cells.map((a) => a.k), B.cap);
       if (now && !B.cleared && ev) ev.push({ type: 'clear', barn: B.id, k: B.cells[0].k });
       if (!now && B.cleared && ev) ev.push({ type: 'unclear', barn: B.id });
       B.cleared = now;
@@ -308,13 +285,13 @@
     const B = S.barns[b];
     if (!B || S.status !== 'play') return { ok: false, why: 'over' };
     const { k, run } = frontGroup(B);
-    if (!run) return { ok: false, why: k === WILD ? 'wild' : 'empty' };
+    if (!run) return { ok: false, why: 'empty' };
     const room = S.cap - trackCount(S);
     const n = Math.min(run, room);
     if (n <= 0) return { ok: false, why: 'full' };
     pushHistory(S);
     const out = [];
-    for (let j = 0; j < n; j++) { const a = B.cells.pop(); const wasMystery = a.mystery; a.mystery = false; S.revealed[a.id] = 1; if (a.k === WILD) { a.k = k; (S.wildKinds = S.wildKinds || {})[k] = 1; } B.queue.push(a); out.push({ id: a.id, wasMystery }); }
+    for (let j = 0; j < n; j++) { const a = B.cells.pop(); const wasMystery = a.mystery; a.mystery = false; S.revealed[a.id] = 1; a.wild = false; a.open = false; B.queue.push(a); out.push({ id: a.id, wasMystery }); }
     const events = [{ type: 'exit', barn: b, k, n, split: n < run, animals: out }];
     recomputeCleared(S, events);
     S.moves++;
@@ -365,7 +342,7 @@
           parked.add(a.id);
           const top = hit.cells[hit.cells.length - 1];
           if (top && top.mystery) { top.mystery = false; S.revealed[top.id] = 1; ev.push({ type: 'reveal', barn: hit.id, id: top.id }); }
-          for (let j = hit.cells.length - 1; j >= 0 && hit.cells[j].k === WILD; j--) { hit.cells[j].k = a.k; (S.wildKinds = S.wildKinds || {})[a.k] = 1; ev.push({ type: 'claim', barn: hit.id, id: hit.cells[j].id, k: a.k }); }
+          for (let j = hit.cells.length - 1; j >= 0 && hit.cells[j].open; j--) hit.cells[j].open = false;
           delete a.s; delete a.from; hit.cells.push(a);
           ev.push({ type: 'park', id: a.id, barn: hit.id, k: a.k });
         }
@@ -381,7 +358,7 @@
     // zoom when every barn is single-colored and every parading animal has a home waiting
     S.zoom = !queued && S.track.length > 0 && S.barns.every((B) => !B.cells.length || B.cells.every((a) => a.k === B.cells[0].k)) &&
       S.track.every((a) => S.barns.some((B) => barnCanPark(B, a.k, S))) && S.barns.every((B) => !B.temp || !B.cells.length);
-    if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared || B.cells.every((a) => a.k === WILD)))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
+    if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
     if (!queued && trackCount(S) >= S.cap && !anyParkable(S)) { S.status = 'lost'; S.reason = 'full'; if (ev) ev.push({ type: 'lost' }); }
   }
   // Settle: run the parade until nothing changes (all parked, or animals circling with nowhere to go)
@@ -433,15 +410,15 @@
     S.barns.push(B); return B;
   }
   function addTempBarn(S) { const B = addTempBarnRaw(S); if (!B) return null; S.used++; if (S.status === 'lost') { S.status = 'play'; S.reason = null; } return B; }
-  // Wild: the front pair of a regular, undesignated barn turns wild. Anyone without a matching barn may park on it
-  // (claiming it as their color, counting toward that barn's 16); tapped out, the wilds leave as the group behind them.
+  // Wild pairs keep their own kind, stay rainbow while buried, and lose Wild only on exit.
+  // New arrivals set the barn's front color, never the wild pair's identity.
   function wildTarget(S, b) {
     const B = S.barns[b];
     if (!B || B.temp) return 'temp';
     if (B.preset != null) return 'designated';
     if (!B.cells.length) return 'empty';
-    if (B.cleared && B.cells.length === B.cap) return 'full';
-    const c = B.cells; if (c[c.length - 1].k === WILD) return 'already';
+    if (B.cells.length >= B.cap) return 'full'; // nothing could park in front of it
+    const c = B.cells; if (c[c.length - 1].wild) return 'already';
     return null;
   }
   function makeWild(S, b) {
@@ -450,8 +427,7 @@
     const B = S.barns[b], c = B.cells;
     const from = Math.max(0, c.length - 2);
     const ids = [];
-    S.wildKinds = S.wildKinds || {};
-    for (let i = from; i < c.length; i++) { S.wildKinds[c[i].k] = 1; c[i].orig = c[i].orig != null ? c[i].orig : c[i].k; c[i].k = WILD; c[i].wild = true; c[i].mystery = false; S.revealed[c[i].id] = 1; ids.push(c[i].id); }
+    for (let i = from; i < c.length; i++) { c[i].wild = true; c[i].open = true; c[i].mystery = false; S.revealed[c[i].id] = 1; ids.push(c[i].id); }
     S.used++;
     if (S.status === 'lost') { S.status = 'play'; S.reason = null; }
     recomputeCleared(S, null); updateStatus(S, null);
@@ -466,11 +442,11 @@
     return out;
   }
   function starsFor(S) { return S.used === 0 ? 3 : S.used <= 2 ? 2 : 1; }
-  function boardOf(S) { return { cells: S.barns.map((B) => B.cells.map((a) => a.k)), cap: S.barns.map((B) => B.cap), preset: S.barns.map((B) => B.preset) }; }
+  function boardOf(S) { return { cells: S.barns.map((B) => B.cells.map((a) => a.k + (a.open ? WOFF : 0))), cap: S.barns.map((B) => B.cap), preset: S.barns.map((B) => B.preset) }; }
 
   return {
     KINDS, CONFIG: C, mulberry32, levelParams, makeLayout, pointAt, topRun, canPark, isCleared, tapBoard, boardWon, solve, replay,
     genAttempt, generateLevel, newGame, tap, step, settle, trackCount, barnCanPark, frontGroup, redo, plus2, magnet, addTempBarn,
-    WILD, wildTarget, makeWild, recomputeCleared, setSolverWeights, revealFront, liveCheck, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
+    WOFF, wildTarget, makeWild, recomputeCleared, setSolverWeights, revealFront, liveCheck, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
   };
 });

@@ -46,7 +46,10 @@
     c.rotate(rot || 0);
     if (opt.sx) c.scale(1 + opt.sx, 1 - opt.sx * 0.5);
     const sp = sprite(kind, Math.max(8, Math.round(size * dpr)));
-    if (sp) c.drawImage(sp, -size / 2, -size / 2, size, size);
+    if (sp && opt.rainbow != null) {
+      c.save(); c.shadowColor = 'hsl(' + Math.round((opt.rainbow * 90) % 360) + ',95%,65%)'; c.shadowBlur = size * 0.32;
+      c.drawImage(rainbowSprite(sp, opt.rainbow), -size / 2, -size / 2, size, size); c.restore();
+    } else if (sp) c.drawImage(sp, -size / 2, -size / 2, size, size);
     else { c.fillStyle = INFO[kind].color; c.beginPath(); c.ellipse(0, 0, size * 0.3, size * 0.42, 0, 0, Math.PI * 2); c.fill(); }
     c.restore();
   }
@@ -66,16 +69,22 @@
     }
     c.restore();
   }
-  function drawWild(c, x, y, px, t) {
-    c.save(); c.translate(x, y);
-    c.shadowColor = '#8a3bd1'; c.shadowBlur = px * 0.1;
-    const g = c.createLinearGradient(-px / 2, -px / 2, px / 2, px / 2);
-    ['#ff698f','#ffb83b','#fff47b','#69dc99','#69cfff','#b78aff'].forEach((col, i) => g.addColorStop(i / 5, col));
-    c.fillStyle = g; c.beginPath(); c.ellipse(0, 0, px * 0.35, px * 0.45, 0, 0, Math.PI * 2); c.fill();
-    c.shadowBlur = 0; c.strokeStyle = '#fff9'; c.lineWidth = px * 0.06; c.stroke();
-    c.fillStyle = '#fff';
-    for (let i = 0; i < 3; i++) { const a = t * 1.2 + i * 2.1, sx = Math.cos(a) * px * 0.29, sy = Math.sin(a) * px * 0.35, r = px * (0.08 + 0.025 * Math.sin(t * 4 + i)); c.beginPath(); c.moveTo(sx,sy-r); c.lineTo(sx+r*0.3,sy-r*0.3); c.lineTo(sx+r,sy); c.lineTo(sx+r*0.3,sy+r*0.3); c.lineTo(sx,sy+r); c.lineTo(sx-r*0.3,sy+r*0.3); c.lineTo(sx-r,sy); c.lineTo(sx-r*0.3,sy-r*0.3); c.closePath(); c.fill(); }
-    c.restore();
+  // rainbow tint over the same animal sprite (shimmering), used for Wild pairs
+  let scratch = null;
+  function rainbowSprite(sp, t) {
+    const w = sp.width; if (!scratch) scratch = document.createElement('canvas');
+    if (scratch.width !== w) { scratch.width = w; scratch.height = w; }
+    const g = scratch.getContext('2d'); g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, w, w); g.drawImage(sp, 0, 0);
+    g.globalCompositeOperation = 'source-atop';
+    const a = t * 1.6, cx = w / 2, dx = Math.cos(a) * w * 0.6, dy = Math.sin(a) * w * 0.6;
+    const gr = g.createLinearGradient(cx - dx, cx - dy, cx + dx, cx + dy);
+    ['#ff4f86', '#ffb22e', '#ffe94a', '#4fd67a', '#41b8ff', '#a66bff', '#ff4f86'].forEach((col, i) => gr.addColorStop(i / 6, col));
+    g.globalAlpha = 0.8; g.fillStyle = gr; g.fillRect(0, 0, w, w);
+    const sh = (Math.sin(t * 2.3) * 0.5 + 0.5) * w; // moving shine
+    const s2 = g.createLinearGradient(sh - w * 0.25, 0, sh + w * 0.25, w); s2.addColorStop(0, 'rgba(255,255,255,0)'); s2.addColorStop(0.5, 'rgba(255,255,255,0.55)'); s2.addColorStop(1, 'rgba(255,255,255,0)');
+    g.globalAlpha = 1; g.fillStyle = s2; g.fillRect(0, 0, w, w);
+    g.globalCompositeOperation = 'source-over';
+    return scratch;
   }
   const patterns = {};
   function pattern(c, key, unitPx, tileUnits) {
@@ -85,5 +94,5 @@
     if (!p) { const sz = Math.max(32, Math.round(unitPx * tileUnits)); const cv = document.createElement('canvas'); cv.width = cv.height = sz; const g = cv.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(im, 0, 0, sz, sz); p = { cv, sz }; patterns[k] = p; }
     return c.createPattern(p.cv, 'repeat');
   }
-  root.BPArt = { KINDS, INFO, FLOOR, img, load, drawWild, drawAnimal, drawMystery, pattern, rr, kname };
+  root.BPArt = { KINDS, INFO, FLOOR, img, load, drawAnimal, drawMystery, pattern, rr, kname };
 })(this);

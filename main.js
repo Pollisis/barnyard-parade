@@ -119,7 +119,6 @@
     for (const e of evs) {
       switch (e.type) {
         case 'park': if (now - parkSnd > 0.07) { AU.fx.park(); parkSnd = now; } break;
-        case 'claim': if (now - parkSnd > 0.07) AU.fx.pop(); flips[e.id] = now; break;
         case 'reveal': flips[e.id] = now; AU.fx.pop(); break;
         case 'clear': {
           AU.fx.chime(); AU.fx.fence(); fences[e.barn] = now;
@@ -148,9 +147,9 @@
     if (wildPick) {
       if (!B) return;
       const why = G.wildTarget(S, B.id);
-      if (why) { AU.fx.nope(); toast(why === 'designated' ? 'Wild cannot target a color-locked barn' : why === 'full' ? 'This barn is already full and sorted' : why === 'temp' ? 'Choose a regular barn' : why === 'already' ? 'This pair is already wild' : 'Choose a barn with animals'); return; }
+      if (why) { AU.fx.nope(); toast(why === 'designated' ? 'Wild cannot target a color-locked barn' : why === 'full' ? 'This barn is full, so nothing could park in front' : why === 'temp' ? 'Choose a regular barn' : why === 'already' ? 'This pair is already wild' : 'Choose a barn with animals'); return; }
       const res = G.makeWild(S, B.id);
-      if (res) { save.bank.wild--; persist(); AU.fx.power(); wildPick = false; $('#wild-pick').classList.add('hidden'); ended = false; fences = {}; for (const X of S.barns) if (X.cleared) fences[X.id] = -10; toast('Wild pair! Any color without a home can park here.'); hud(); }
+      if (res) { save.bank.wild--; persist(); AU.fx.power(); wildPick = false; $('#wild-pick').classList.add('hidden'); ended = false; fences = {}; for (const X of S.barns) if (X.cleared) fences[X.id] = -10; toast('Rainbow pair! Any color can park in front of it.'); hud(); }
       return;
     }
     if (!B) {
@@ -163,7 +162,6 @@
     if (!res.ok) {
       AU.fx.nope();
       if (res.why === 'full') toast('The parade is full! Wait for a spot, or use +2 Track.');
-      else if (res.why === 'wild') toast('This pair is waiting for a color to join it');
       else if (res.why === 'empty') toast(B.temp ? 'This extra barn is empty' : 'This barn is empty');
       return;
     }
@@ -202,7 +200,7 @@
   }
   const PW_DESC = {
     redo: 'Puts the last group you sent out back in its barn.',
-    wild: 'Choose a front pair to turn rainbow-wild: any color without a home can join it.',
+    wild: 'Pick a front pair to turn rainbow. Any color can park in front of it, but the pair still has to go home to its own barn.',
     plus2: 'Makes room for 2 more animals on the parade. Use it again for more.',
     magnet: 'Pulls every animal of one random color off the farm.',
     barn: 'Adds a small extra barn that holds 4 animals (color-locked animals still go only to their own barn).',
@@ -272,7 +270,7 @@
       '<p>They <b>parade around the loop</b> and park by themselves next to a matching animal. Only if their kind has no barn do they take an empty one.</p>' +
       '<p>Fill a barn with <b>16 of one animal</b> and a fence closes it. Sort every barn to win!</p>' +
       '<p>The sign shows how many are parading (x/16). If it is full and nobody can park, the level is over. <b>?</b> boxes are a surprise until they leave. A <b>colored barn</b> only takes its animal, and that animal can park nowhere else.</p>' +
-      '<p>Wild turns a front pair rainbow: a color without a home can join it and claim the pair. Color-locked barns cannot be made wild. Power-ups are free and saved between levels.</p>',
+      '<p><b>Wild</b> turns a front pair rainbow: any color can park in front of it, and that color sets the barn. The rainbow pair still has to go home later. Color-locked and extra barns cannot be made wild. Power-ups are free and saved between levels.</p>',
     [{ label: "Let's play!", fn: closeModal }]);
   }
   function showMap() {
@@ -412,14 +410,13 @@
     for (const a of list) {
       const d = disp.get(a.id); if (!d) continue;
       const q = toPx(d.x, d.y);
-      if (a.k === G.WILD) { ART.drawWild(c, q.x, q.y, u * 1.06, time + a.id); continue; }
       const fl = flips[a.id]; const ft = fl != null ? (time - fl) / 0.3 : 2;
       if (a.mystery || ft < 0.5) { ART.drawMystery(c, q.x, q.y, u, a.mystery ? 1 : Math.max(0, 1 - ft * 2)); if (a.mystery) continue; }
       let rot = d.rot, sx = 0, sc = 1;
       if (d.mode === 'track') { rot += Math.sin(time * (S.zoom ? 26 : 13) + d.phase) * 0.16; sx = Math.sin(time * 13 + d.phase) * 0.05; }
       if (ft < 1) sc = Math.max(0.01, (ft - 0.5) * 2);
       if (d.squash != null && time - d.squash < 0.25) sx += Math.sin((time - d.squash) / 0.25 * Math.PI) * 0.2;
-      ART.drawAnimal(c, a.k, q.x, q.y, u * 1.06, rot, { dpr: view.dpr, sx, scale: sc });
+      ART.drawAnimal(c, a.k, q.x, q.y, u * 1.06, rot, { dpr: view.dpr, sx, scale: sc, rainbow: a.wild ? time + a.id * 0.37 : null });
     }
   }
   function frame(tms) {

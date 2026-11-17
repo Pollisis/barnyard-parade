@@ -1,7 +1,7 @@
 // Barnyard Parade: names and tuning knobs. Change GAME_NAME here to rename the game everywhere.
 (function (root) {
   const GAME_NAME = 'Barnyard Parade';
-  const VERSION = 4;
+  const VERSION = 5;
   const CONFIG = {
     // Core rules
     TRACK_CAPACITY: 16,       // animals allowed on the loop at once (the "x/16" sign)

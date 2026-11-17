@@ -112,12 +112,52 @@ const fill = (k, n) => new Array(n).fill(k);
   G.tap(S, 0); G.settle(S);
   ok(B.cells.length === 4 && S.track.length === 2, 'extra barn fills to 4, the rest keep parading');
 }
-// 11. shuffle keeps every animal
+// 11. Wild power-up
 {
-  const S = G.newGame(mk([[1, 2, 3, 4], [4, 3, 2, 1], [5, 5]]));
-  const before = [].concat(...S.barns.map(kinds)).sort().join();
-  G.shuffleColors(S, G.mulberry32(3));
-  ok([].concat(...S.barns.map(kinds)).sort().join() === before && S.barns.every((B, i) => B.cells.length === [4, 4, 2][i]), 'shuffle keeps animals and barn sizes');
+  const W = G.WILD;
+  // any color without a barn of its own may park on a wild pair, which then takes that color
+  let S = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [7]]));
+  ok(G.makeWild(S, 0) && kinds(S.barns[0]).join() === [1, 1, W, W].join(), 'wild turns the front pair wild');
+  G.tap(S, 1); G.settle(S);
+  ok(kinds(S.barns[0]).join() === '1,1,4,4,4,4' && S.track.length === 0, 'a color with no barn parks on the wild pair and claims it');
+  // a real matching barn still comes first
+  S = G.newGame(mk([[1, 1, 2, 2], [0, 4, 4], [3, 4]]));
+  G.makeWild(S, 0); G.tap(S, 1); G.settle(S);
+  ok(kinds(S.barns[2]).join() === '3,4,4,4' && S.barns[0].cells[3].k === W, 'matching barn beats the wild pair');
+  // wild beats an empty barn
+  S = G.newGame(mk([[0, 4, 4], [], [1, 2, 2]]));
+  G.makeWild(S, 2); G.tap(S, 0); G.settle(S);
+  ok(S.barns[1].cells.length === 0 && kinds(S.barns[2]).join() === '1,4,4,4,4', 'wild pair beats an empty barn');
+  // designated barns can't be made wild, and designated animals never use a wild pair
+  S = G.newGame(mk([[1, 5, 5], [2, 2, 3, 3], [4, 4]], { preset: [null, null, 5] }));
+  ok(G.wildTarget(S, 2) === 'designated' && !G.makeWild(S, 2), 'wild cannot target a color-locked barn');
+  G.makeWild(S, 1); G.tap(S, 0); G.settle(S);
+  ok(S.track.length === 2 && S.barns[1].cells[3].k === W, 'color-locked animals ignore wild pairs');
+  // tapped out, the wild pair leaves with the group behind it, as that color
+  S = G.newGame(mk([[3, 3, 3, 5, 5], [], [1]]));
+  G.makeWild(S, 0); const r = G.tap(S, 0);
+  ok(r.ok && r.n === 5 && r.k === 3 && S.barns[0].queue.every((a) => a.k === 3), 'wild pair exits with the group behind it, as that color');
+  // a barn of only wild animals stays put
+  S = G.newGame(mk([[1, 2], [3]]));
+  G.makeWild(S, 0);
+  ok(G.tap(S, 0).why === 'wild', 'a barn of only wild animals cannot be tapped');
+  // the claimed pair counts toward 16, and the level can still be finished
+  S = G.newGame(mk([[].concat(fill(6, 12), [2, 2]), [0, 6, 6], [2, 2], fill(0, 1)]));
+  G.makeWild(S, 0); G.tap(S, 1); G.settle(S);
+  ok(S.barns[0].cleared && S.barns[0].cells.length === 16, 'claimed wild pair counts toward the 16');
+  // redo undoes it
+  S = G.newGame(mk([[1, 1, 2, 2], [3]]));
+  G.makeWild(S, 0);
+  ok(G.redo(S) && kinds(S.barns[0]).join() === '1,1,2,2', 'redo undoes a wild');
+  // compact solver rules agree
+  const bd = { cells: [[1, 1, W, W], [0, 4, 4], []], cap: [16, 16, 16], preset: [null, null, null] };
+  ok(G.canPark(bd, 0, 5) && !G.canPark(bd, 2, 5) && !G.canPark(bd, 0, 4), 'solver: home beats wild beats empty');
+  const st = G.tapBoard(bd, {}, 1);
+  ok(st && st.board.cells[0].join() === '1,1,4,4,4,4', 'solver: parking claims the wild pair');
+  const st2 = G.tapBoard({ cells: [[3, 3, W, W], [], [5]], cap: [16, 16, 16], preset: [null, null, null] }, {}, 0);
+  ok(st2 && st2.board.cells[1].join() === '3,3,3,3', 'solver: wild pair leaves as the group behind it');
+  ok(G.boardWon({ cells: [fill(6, 16), [6, 6], fill(2, 14)], cap: [16, 16, 16], preset: [null, null, null] }, {}), 'solver: a level with 18/14 split colors can still be won');
+  ok(!G.boardWon({ cells: [fill(6, 8), fill(6, 8)], cap: [16, 16], preset: [null, null] }, {}), 'solver: 16 split over two barns is not a win');
 }
 // 12. compact rules (solver) match the real-time parade
 {
@@ -143,7 +183,7 @@ const fill = (k, n) => new Array(n).fill(k);
     for (const c of lv.board.cells) for (const k of c) cnt[k] = (cnt[k] || 0) + 1;
     ok(Object.keys(cnt).length >= 8 && Object.values(cnt).every((v) => v === 16), 'level ' + L + ': ' + Object.keys(cnt).length + ' colors, 16 each');
   }
-  ok(G.rewardFor(1).redo === 1 && G.rewardFor(5).magnet >= 1 && G.rewardFor(5).barn >= 1, 'rewards rotate, bundle every 5');
+  ok(!JSON.stringify(G.CONFIG.START_BANK).includes('shuffle') && G.CONFIG.START_BANK.wild >= 1 && G.rewardFor(1).redo === 1 && G.rewardFor(5).magnet >= 1 && G.rewardFor(5).barn >= 1, 'rewards rotate, bundle every 5');
   ok(G.starsFor({ used: 0 }) === 3 && G.starsFor({ used: 2 }) === 2 && G.starsFor({ used: 3 }) === 1, 'stars by power-ups used');
 }
 console.log(pass + ' passed, ' + fail + ' failed');

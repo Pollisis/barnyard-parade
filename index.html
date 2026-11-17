@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#7cc95a">
 <title>Barnyard Parade</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐷</text></svg>">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <div id="app">
@@ -24,13 +24,14 @@
   </div>
   <footer id="bottom">
     <button class="pw" data-pw="redo" aria-label="Redo"><svg viewBox="0 0 48 48"><path d="M24 10a14 14 0 1 1-13.6 17.3" fill="none" stroke="#2f8fe6" stroke-width="6" stroke-linecap="round"/><path d="M6 13l10 1-6 8z" fill="#2f8fe6"/></svg><span class="cnt">0</span><span class="lbl">Redo</span></button>
-    <button class="pw" data-pw="shuffle" aria-label="Shuffle colors"><svg viewBox="0 0 48 48"><path d="M6 14h8c8 0 12 20 20 20h6M6 34h8c8 0 12-20 20-20h6" fill="none" stroke="#c04ad8" stroke-width="5" stroke-linecap="round"/><path d="M36 8l7 6-7 6zM36 28l7 6-7 6z" fill="#c04ad8"/></svg><span class="cnt">0</span><span class="lbl">Shuffle</span></button>
+    <button class="pw" data-pw="wild" aria-label="Wild pair"><svg viewBox="0 0 48 48"><defs><linearGradient id="rainbow"><stop stop-color="#ff5c8a"/><stop offset=".25" stop-color="#ffc33a"/><stop offset=".5" stop-color="#70d979"/><stop offset=".75" stop-color="#65c7ff"/><stop offset="1" stop-color="#bc7cef"/></linearGradient></defs><ellipse cx="24" cy="25" rx="17" ry="19" fill="url(#rainbow)" stroke="#fff" stroke-width="2"/><path d="M24 10l3 10 9 4-9 3-3 10-3-10-9-3 9-4z" fill="#fff"/></svg><span class="cnt">0</span><span class="lbl">Wild</span></button>
     <button class="pw" data-pw="plus2" aria-label="Two more on the track"><svg viewBox="0 0 48 48"><path d="M6 14h30l8 10-8 10H6z" fill="#ffb627" stroke="#c87a00" stroke-width="2.5" stroke-linejoin="round"/><text x="21" y="31" text-anchor="middle" font-size="17" font-weight="900" fill="#fff" font-family="system-ui,sans-serif">+2</text></svg><span class="cnt">0</span><span class="lbl">+2 Track</span></button>
     <button class="pw" data-pw="magnet" aria-label="Magnet"><svg viewBox="0 0 48 48"><path d="M10 8v16a14 14 0 0 0 28 0V8h-9v16a5 5 0 0 1-10 0V8z" fill="#ef4150"/><path d="M10 8h9v7h-9zM29 8h9v7h-9z" fill="#dfe6ee"/></svg><span class="cnt">0</span><span class="lbl">Magnet</span></button>
     <button class="pw" data-pw="barn" aria-label="Extra barn"><svg viewBox="0 0 48 48"><path d="M6 22L24 8l18 14v18H6z" fill="#d8453b" stroke="#8e2a22" stroke-width="2.5" stroke-linejoin="round"/><rect x="17" y="26" width="14" height="14" fill="#fff3d6" stroke="#8e2a22" stroke-width="2"/><path d="M17 26l14 14M31 26L17 40" stroke="#8e2a22" stroke-width="2"/></svg><span class="cnt">0</span><span class="lbl">Barn +4</span></button>
   </footer>
 </div>
 
+<div id="wild-pick" class="hidden">Tap a barn to make its front pair Wild <button id="wild-cancel">Cancel</button></div>
 <div id="toast" class="hidden"></div>
 
 <div id="modal" class="hidden"><div class="panel"><h2 id="m-title"></h2><div id="m-body"></div><div id="m-buttons"></div></div></div>
@@ -41,10 +42,10 @@
   <div id="map-foot"><button id="map-play" class="big">Play</button></div>
 </div>
 
-<script src="config.js?v=3"></script>
-<script src="game.js?v=3"></script>
-<script src="art.js?v=3"></script>
-<script src="audio.js?v=3"></script>
-<script src="main.js?v=3"></script>
+<script src="config.js?v=4"></script>
+<script src="game.js?v=4"></script>
+<script src="art.js?v=4"></script>
+<script src="audio.js?v=4"></script>
+<script src="main.js?v=4"></script>
 </body>
 </html>

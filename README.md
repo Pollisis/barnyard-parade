@@ -1,5 +1,7 @@
 # Barnyard Parade
 
+v4: bigger full-screen board (tall layout in portrait, wide 4-across barns in landscape), power-ups in a floating column on the left, painted farm backdrop, Wild replaces Shuffle.
+
 A cozy barn-sorting puzzle for the phone browser. Original art and code, no ads, no store, no lives.
 
 Play: https://pollisis.github.io/barnyard-parade/
@@ -14,7 +16,7 @@ Play: https://pollisis.github.io/barnyard-parade/
 - When everything left has a home, the last animals hurry home.
 
 ## Power-ups (free, earned by clearing levels, saved on the device)
-Each asks first (name, what it does, how many you have). Redo (put the last group back), Shuffle (re-deal the colors in unsorted barns), +2 Track (stacks), Magnet (removes every animal of one random color), Extra barn (holds 4; color-locked animals can't use it).
+Each asks first (name, what it does, how many you have). Redo (put the last group back), Wild (pick a front pair in a regular barn; it turns rainbow-wild and the first color without a matching barn that comes by claims it, the pair then counting toward that barn's 16; tapped out first, the wild pair leaves as the group behind it; color-locked barns can't be made wild and color-locked animals ignore wild pairs), +2 Track (stacks), Magnet (removes every animal of one random color), Extra barn (holds 4; color-locked animals can't use it).
 
 ## Levels
 Levels are generated from a seed (same level every time), get a little harder and then plateau (8 colors at level 1, 10 by level 17; ? boxes from level 3; 2 color-locked barns from level 5, 3 from level 15). Every level is checked by a solver and only shown if it can be won **without power-ups**, assuming you let the parade settle between taps; the found solution is also replayed through the real-time parade before the level is shown.

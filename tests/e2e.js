@@ -104,7 +104,7 @@ async function play(p, stop) {
   await page.click('#pw-cancel');
   check((await page.evaluate(() => window.__bp.modal)) === null, 'cancel closes it without using');
   // power-ups
-  await page.evaluate(() => { const b = window.__bp.save.bank; b.plus2 = 2; b.barn = 1; b.magnet = 1; b.shuffle = 1; });
+  await page.evaluate(() => { const b = window.__bp.save.bank; b.plus2 = 2; b.barn = 1; b.magnet = 1; b.wild = 1; });
   await usePw(page, 'plus2'); await usePw(page, 'plus2'); await page.waitForTimeout(200);
   check(/\/20$/.test(await page.textContent('#cap-text')), '+2 stacks (' + (await page.textContent('#cap-text')) + ')');
   const nb = await page.evaluate(() => window.__bp.S.barns.length);
@@ -113,8 +113,12 @@ async function play(p, stop) {
   const kinds0 = await page.evaluate(() => new Set(window.__bp.S.barns.flatMap((B) => B.cells.map((a) => a.k))).size);
   await usePw(page, 'magnet'); await page.waitForTimeout(1500);
   check((await page.evaluate(() => new Set(window.__bp.S.barns.flatMap((B) => B.cells.map((a) => a.k))).size)) === kinds0 - 1, 'magnet removed one color');
-  await usePw(page, 'shuffle'); await page.waitForTimeout(300);
-  check((await page.evaluate(() => window.__bp.save.bank.shuffle)) === 0, 'shuffle used');
+  await usePw(page, 'wild'); await page.waitForTimeout(200);
+  check(await page.evaluate(() => window.__bp.wildPick), 'wild: pick mode after confirming');
+  const wt = await page.evaluate(() => { const S = window.__bp.S; return { ok: S.barns.findIndex((B) => !window.BPGame.wildTarget(S, B.id)), des: S.barns.findIndex((B) => B.preset != null) }; });
+  if (wt.des >= 0) { await tapBarn(page, wt.des); await page.waitForTimeout(150); check(await page.evaluate(() => window.__bp.wildPick && window.__bp.save.bank.wild === 1), 'wild: a color-locked barn is refused'); }
+  await tapBarn(page, wt.ok); await page.waitForTimeout(250);
+  check(await page.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return !window.__bp.wildPick && window.__bp.save.bank.wild === 0 && c[c.length - 1].k === window.BPGame.WILD; }, wt.ok), 'wild: front pair turned wild and the charge used');
   await page.screenshot({ path: out + '/06-after-power-ups.png' });
 
   // game over when the parade is full with nowhere to go
@@ -144,8 +148,11 @@ async function play(p, stop) {
   // iPad portrait: color-locked barns, scenery, power-up confirm; then landscape
   const tab = await browser.newContext({ viewport: { width: 820, height: 1180 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   const tp = await tab.newPage(); tp.on('pageerror', (e) => consoleErr.push(e.message)); tp.on('console', (m) => { if (m.type() === 'error') consoleErr.push(m.text()); });
-  await tp.addInitScript(() => { if (!localStorage.getItem('barnyard-parade.save.v2')) localStorage.setItem('barnyard-parade.save.v2', JSON.stringify({ seenHelp: true, maxLevel: 21, current: 21 })); });
+  await tp.addInitScript(() => { if (!localStorage.getItem('barnyard-parade.save.v2')) localStorage.setItem('barnyard-parade.save.v2', JSON.stringify({ seenHelp: true, maxLevel: 21, current: 21, bank: { redo: 3, shuffle: 2, plus2: 1, magnet: 1, barn: 1 } })); });
   await tp.goto(url); await ready(tp);
+  const bk = await tp.evaluate(() => window.__bp.save.bank);
+  check(bk.wild === 2 && bk.shuffle === undefined && bk.redo === 3, 'old Shuffle charges became Wild charges (' + JSON.stringify(bk) + ')');
+  check((await tp.evaluate(() => { const r = window.__bp.barnScreen(0); const z = window.__bp.barnScreen(window.__bp.S.barns.length - 1); return z.y - r.y; })) > 600, 'portrait: board fills the iPad screen');
   const pres = await tp.evaluate(() => window.__bp.S.barns.filter((B) => B.preset != null).length);
   check(pres === 3, 'level 21 has 3 color-locked barns');
   await tp.evaluate(() => { window.__bp.speed = 1; });
@@ -153,6 +160,16 @@ async function play(p, stop) {
   for (const b of s21) { await tapBarn(tp, b); await tp.waitForTimeout(450); }
   await tp.waitForTimeout(700);
   await tp.screenshot({ path: out + '/10-ipad-portrait-designated-scenery.png' });
+  // Wild on iPad
+  await tp.click('.pw[data-pw="wild"]'); await tp.waitForTimeout(250);
+  await tp.screenshot({ path: out + '/11a-ipad-wild-confirm.png' });
+  await tp.click('#pw-use'); await tp.waitForTimeout(200);
+  const tgt = await tp.evaluate(() => window.__bp.S.barns.findIndex((B) => !B.temp && B.preset == null && B.cells.length > 4 && !window.BPGame.wildTarget(window.__bp.S, B.id)));
+  await tapBarn(tp, tgt); await tp.waitForTimeout(600);
+  check(await tp.evaluate((b) => { const c = window.__bp.S.barns[b].cells; return c[c.length - 1].k === window.BPGame.WILD && c[c.length - 2].k === window.BPGame.WILD; }, tgt), 'iPad: wild pair made');
+  await tp.screenshot({ path: out + '/11b-ipad-wild-pair.png' });
+  // a homeless color joins the wild pair (if one comes by) - run the parade a bit
+  await tp.evaluate(() => { window.__bp.speed = 4; }); await tp.waitForTimeout(2500); await tp.evaluate(() => { window.__bp.speed = 1; });
   await tp.click('.pw[data-pw="barn"]'); await tp.waitForTimeout(300);
   await tp.screenshot({ path: out + '/11-ipad-powerup-confirm.png' });
   await tp.click('#pw-cancel');

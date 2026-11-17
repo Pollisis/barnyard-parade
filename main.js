@@ -5,8 +5,8 @@
   const $ = (s) => document.querySelector(s);
   document.title = CF.GAME_NAME;
   document.querySelectorAll('[data-name]').forEach((e) => { e.textContent = CF.GAME_NAME; });
-  const PW = ['redo', 'shuffle', 'plus2', 'magnet', 'barn'];
-  const PW_NAME = { redo: 'Redo', shuffle: 'Shuffle', plus2: '+2 Track', magnet: 'Magnet', barn: 'Extra barn' };
+  const PW = ['redo', 'wild', 'plus2', 'magnet', 'barn'];
+  const PW_NAME = { redo: 'Redo', wild: 'Wild', plus2: '+2 Track', magnet: 'Magnet', barn: 'Extra barn' };
 
   // ---------- save data ----------
   const KEY = 'barnyard-parade.save.v2';
@@ -14,8 +14,11 @@
   let save;
   try { save = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { save = defaults(); }
   try { const old = JSON.parse(localStorage.getItem('barnyard-parade.save.v1') || 'null'); if (old && old.settings && !localStorage.getItem(KEY)) save.settings = old.settings; } catch (e) { /* ignore */ }
+  // migrate the old Shuffle inventory exactly once, keeping all progress and settings
+  if (typeof save.bank.shuffle === 'number') { save.bank.wild = (save.bank.wild || 0) + save.bank.shuffle; delete save.bank.shuffle; }
   for (const k of PW) if (typeof save.bank[k] !== 'number') save.bank[k] = C.START_BANK[k] || 0;
   const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) { /* private mode */ } };
+  persist();
   AU.set(save.settings);
 
   // level cache (generation is deterministic; caching just saves time on slower phones)
@@ -37,12 +40,13 @@
   let disp = new Map();       // animal id -> {x,y,rot,phase,puff}
   let puffs = [], particles = [], popups = [], flyers = [];
   let flips = {}, fences = {}, taps = {};
+  let wildPick = false;
   let modalOpen = false, time = 0, stepTimer = 0, wasZoom = false, ended = false, speed = 1, parkSnd = 0;
 
   // ---------- geometry ----------
   function barnRect(B) { return B.temp ? lay.temps[B.tempIndex] : lay.barns[B.id]; }
   function cellPos(B, j) {
-    const r = barnRect(B), row = Math.floor(j / 2), col = j % 2;
+    const r = barnRect(B), cols = B.temp ? 2 : lay.cols, row = Math.floor(j / cols), col = j % cols;
     const x = r.x + 0.15 + col + 0.5;
     if (r.side === 'top') return { x, y: r.y + 0.175 + row + 0.5, rot: Math.PI };
     return { x, y: r.y + r.h - 0.175 - row - 0.5, rot: 0 };
@@ -55,9 +59,26 @@
     cv.width = Math.round(r.width * view.dpr); cv.height = Math.round(r.height * view.dpr);
     view.w = r.width; view.h = r.height;
     if (!lay) return;
-    view.u = Math.min(r.width / (lay.W + 0.1), r.height / (lay.H + 0.1));
-    view.ox = (r.width - lay.W * view.u) / 2; view.oy = Math.max(0, (r.height - lay.H * view.u) / 2);
+    const wide = r.width > r.height * 1.15;
+    if (lay.wide !== wide) {
+      const oldL = S.L;
+      lay = G.makeLayout(S.barns.filter((B) => !B.temp).length, wide);
+      for (const a of S.track) a.s = a.s / oldL * lay.L;
+      disp = new Map();
+    }
+    syncLayout();
+    const left = r.width < 600 ? 55 : 72, right = 6, top = r.width < 600 ? 64 : 70, bottom = 8;
+    view.u = Math.min((r.width - left - right) / (lay.W + 0.05), (r.height - top - bottom) / (lay.H + 0.05));
+    view.ox = left + (r.width - left - right - lay.W * view.u) / 2;
+    view.oy = top + (r.height - top - bottom - lay.H * view.u) / 2;
     placeSign();
+  }
+  // the same level can be drawn tall (portrait, barns 2 wide) or wide (landscape, barns 4 wide); loop order is identical
+  function syncLayout() {
+    if (!S) return;
+    S.layoutRef = lay; S.L = lay.L; S.frontN = lay.cols;
+    for (const B of S.barns) B.dock = (B.temp ? lay.temps[B.tempIndex] : lay.barns[B.id]).dock;
+    G.revealFront(S, null);
   }
   function placeSign() { const p = toPx(lay.sign.x, lay.sign.y); const e = $('#cap'); e.style.left = p.x + 'px'; e.style.top = p.y + 'px'; }
 
@@ -71,7 +92,7 @@
       lv = loadLevel(n); lay = lv.layout; S = G.newGame(lv);
       disp = new Map(); puffs = []; particles = []; popups = []; flyers = []; flips = {}; fences = {}; taps = {};
       for (const B of S.barns) if (B.cleared) fences[B.id] = -10;
-      ended = false; wasZoom = false;
+      ended = false; wasZoom = false; wildPick = false; $('#wild-pick').classList.add('hidden');
       resize(); hud();
       $('#loading').classList.add('hidden');
       if (!save.seenHelp) setTimeout(showHelp, 250);
@@ -98,6 +119,7 @@
     for (const e of evs) {
       switch (e.type) {
         case 'park': if (now - parkSnd > 0.07) { AU.fx.park(); parkSnd = now; } break;
+        case 'claim': if (now - parkSnd > 0.07) AU.fx.pop(); flips[e.id] = now; break;
         case 'reveal': flips[e.id] = now; AU.fx.pop(); break;
         case 'clear': {
           AU.fx.chime(); AU.fx.fence(); fences[e.barn] = now;
@@ -123,6 +145,14 @@
     if (!S || modalOpen) return;
     const rc = cv.getBoundingClientRect(); const x = (ev.clientX - rc.left - view.ox) / view.u, y = (ev.clientY - rc.top - view.oy) / view.u;
     const B = pickBarn(x, y);
+    if (wildPick) {
+      if (!B) return;
+      const why = G.wildTarget(S, B.id);
+      if (why) { AU.fx.nope(); toast(why === 'designated' ? 'Wild cannot target a color-locked barn' : why === 'full' ? 'This barn is already full and sorted' : why === 'temp' ? 'Choose a regular barn' : why === 'already' ? 'This pair is already wild' : 'Choose a barn with animals'); return; }
+      const res = G.makeWild(S, B.id);
+      if (res) { save.bank.wild--; persist(); AU.fx.power(); wildPick = false; $('#wild-pick').classList.add('hidden'); ended = false; fences = {}; for (const X of S.barns) if (X.cleared) fences[X.id] = -10; toast('Wild pair! Any color without a home can park here.'); hud(); }
+      return;
+    }
     if (!B) {
       for (const a of S.track) { const d = disp.get(a.id); if (d && Math.hypot(d.x - x, d.y - y) < 0.7) { AU.fx.animal(a.k); d.squash = time; return; } }
       return;
@@ -133,6 +163,7 @@
     if (!res.ok) {
       AU.fx.nope();
       if (res.why === 'full') toast('The parade is full! Wait for a spot, or use +2 Track.');
+      else if (res.why === 'wild') toast('This pair is waiting for a color to join it');
       else if (res.why === 'empty') toast(B.temp ? 'This extra barn is empty' : 'This barn is empty');
       return;
     }
@@ -152,8 +183,11 @@
     if (S.status === 'won') return;
     if (!(save.bank[k] > 0)) { AU.fx.nope(); toast('No ' + PW_NAME[k] + ' left. Clear levels to earn more (they are free)!', 2200); return; }
     let ok = false;
-    if (k === 'redo') { ok = G.redo(S); if (!ok) toast('Nothing to put back yet'); else { toast('Back where they were'); fences = {}; for (const B of S.barns) if (B.cleared) fences[B.id] = -10; } }
-    else if (k === 'shuffle') { ok = G.shuffleColors(S); if (!ok) toast('Nothing to shuffle'); else toast('Shuffled!'); }
+    if (k === 'redo') { ok = G.redo(S); syncLayout(); if (!ok) toast('Nothing to put back yet'); else { toast('Back where they were'); fences = {}; for (const B of S.barns) if (B.cleared) fences[B.id] = -10; } }
+    else if (k === 'wild') {
+      if (!S.barns.some((B) => !G.wildTarget(S, B.id))) { toast('No pair can be made wild right now'); return; }
+      wildPick = true; $('#wild-pick').classList.remove('hidden'); return;
+    }
     else if (k === 'plus2') { ok = G.plus2(S); if (!ok) toast('The track is as long as it gets'); else popups.push({ text: '+2 on the track!', x: lay.W / 2, y: (lay.yT + lay.yB) / 2, t: 0 }); }
     else if (k === 'magnet') {
       const before = new Map(); for (const [id, d] of disp) before.set(id, { x: d.x, y: d.y, rot: d.rot });
@@ -168,7 +202,7 @@
   }
   const PW_DESC = {
     redo: 'Puts the last group you sent out back in its barn.',
-    shuffle: 'Mixes up the colors in every barn that is not sorted yet.',
+    wild: 'Choose a front pair to turn rainbow-wild: any color without a home can join it.',
     plus2: 'Makes room for 2 more animals on the parade. Use it again for more.',
     magnet: 'Pulls every animal of one random color off the farm.',
     barn: 'Adds a small extra barn that holds 4 animals (color-locked animals still go only to their own barn).',
@@ -180,7 +214,8 @@
     const body = '<p class="pw-desc">' + PW_DESC[k] + '</p><p class="pw-left">' + (n > 0 ? 'You have <b>' + n + '</b> left.' : 'You have none left. Clear levels to earn more (they are free).') + '</p>';
     modal(PW_NAME[k], body, n > 0 ? [{ label: 'Cancel', cls: 'grey', id: 'pw-cancel', fn: closeModal }, { label: 'Use', id: 'pw-use', fn: () => { closeModal(); usePower(k); } }] : [{ label: 'OK', id: 'pw-cancel', fn: closeModal }]);
   }
-  document.querySelectorAll('.pw').forEach((b) => b.addEventListener('click', () => confirmPower(b.dataset.pw)));
+  document.querySelectorAll('.pw').forEach((b) => b.addEventListener('click', () => { wildPick = false; $('#wild-pick').classList.add('hidden'); confirmPower(b.dataset.pw); }));
+  $('#wild-cancel').onclick = () => { wildPick = false; $('#wild-pick').classList.add('hidden'); };
   $('#btn-restart').addEventListener('click', () => { AU.fx.click(); if (modalOpen) closeModal(); if (save.current) startLevel(save.current); });
   $('#btn-settings').addEventListener('click', () => { AU.fx.click(); showSettings(); });
 
@@ -215,6 +250,7 @@
     if (b.redo > 0 && S.history.length) btns.push({ label: 'Redo (' + b.redo + ')', cls: 'blue', fn: () => { closeModal(); usePower('redo'); } });
     if (b.plus2 > 0) btns.push({ label: '+2 Track (' + b.plus2 + ')', cls: 'orange', fn: () => { closeModal(); usePower('plus2'); } });
     if (b.barn > 0 && S.barns.filter((B) => B.temp).length < C.TEMP_BARN_MAX) btns.push({ label: 'Extra barn (' + b.barn + ')', cls: 'orange', fn: () => { closeModal(); usePower('barn'); } });
+    if (b.wild > 0 && S.barns.some((B) => !G.wildTarget(S, B.id))) btns.push({ label: 'Wild (' + b.wild + ')', cls: 'orange', fn: () => { closeModal(); S.status = 'play'; S.reason = null; ended = false; usePower('wild'); } });
     if (b.magnet > 0) btns.push({ label: 'Magnet (' + b.magnet + ')', cls: 'orange', fn: () => { closeModal(); usePower('magnet'); } });
     btns.push({ label: 'Retry', id: 'btn-retry', fn: () => { closeModal(); startLevel(S.level); } });
     modal('Out of room!', '<p>The parade is full and nobody has a barn to park in.</p><p>Every level can be won without power-ups. Try again, or use one you saved.</p>', btns);
@@ -236,7 +272,7 @@
       '<p>They <b>parade around the loop</b> and park by themselves next to a matching animal. Only if their kind has no barn do they take an empty one.</p>' +
       '<p>Fill a barn with <b>16 of one animal</b> and a fence closes it. Sort every barn to win!</p>' +
       '<p>The sign shows how many are parading (x/16). If it is full and nobody can park, the level is over. <b>?</b> boxes are a surprise until they leave. A <b>colored barn</b> only takes its animal, and that animal can park nowhere else.</p>' +
-      '<p>Power-ups are free, earned by playing, and saved between levels.</p>',
+      '<p>Wild turns a front pair rainbow: a color without a home can join it and claim the pair. Color-locked barns cannot be made wild. Power-ups are free and saved between levels.</p>',
     [{ label: "Let's play!", fn: closeModal }]);
   }
   function showMap() {
@@ -271,50 +307,25 @@
 
   // ---------- drawing ----------
   const rr = ART.rr;
-  // grass + farm scenery, drawn once per level/size into an offscreen canvas
+  // painted farm backdrop (portrait and landscape versions), cached at viewport size
   let ground = null, groundKey = '';
-  const SC_SIZE = { tree: 3.4, pond: 4.6, garden: 3.8, bush: 1.9, hay: 1.4, flowers: 1.3 };
-  function placeScenery() {
-    const r = G.mulberry32(((S ? S.level : 1) * 7919 + 13) >>> 0), u = view.u, out = [];
-    const bx0 = view.ox - 0.25 * u, by0 = view.oy - 0.25 * u, bx1 = view.ox + (lay.W + 0.25) * u, by1 = view.oy + (lay.H + 0.25) * u;
-    const hitsBoard = (x, y, rad) => { const cx = Math.max(bx0, Math.min(x, bx1)), cy = Math.max(by0, Math.min(y, by1)); return Math.hypot(x - cx, y - cy) < rad; };
-    const order = ['tree', 'pond', 'garden', 'tree', 'garden', 'pond', 'tree', 'hay', 'hay', 'bush', 'bush', 'bush', 'flowers', 'flowers', 'flowers', 'hay', 'bush', 'flowers', 'tree', 'bush', 'flowers', 'hay', 'flowers', 'bush', 'flowers', 'flowers'];
-    for (const k of order) {
-      const im = ART.img[k]; if (!im) continue;
-      for (let t = 0; t < 40; t++) {
-        const sz = SC_SIZE[k] * u * (0.85 + r() * 0.3); const w = sz, h = sz * im.height / im.width; const rad = Math.max(w, h) * 0.42;
-        const x = -w * 0.25 + r() * (view.w + w * 0.5), y = -h * 0.25 + r() * (view.h + h * 0.5);
-        if (hitsBoard(x, y, rad * 0.95)) continue;
-        if (out.some((o) => Math.hypot(o.x - x, o.y - y) < (o.rad + rad) * 0.9)) continue;
-        out.push({ k, x, y, w, h, rad, rot: (k === 'garden' || k === 'pond') ? (r() - 0.5) * 0.3 : r() * Math.PI * 2 }); break;
-      }
-    }
-    return out;
-  }
-  function buildGround() {
-    const g = document.createElement('canvas'); g.width = cv.width; g.height = cv.height; const c = g.getContext('2d');
-    const u = view.u;
-    const gp = ART.pattern(c, 'grass', u * view.dpr, 7);
-    if (gp) { c.fillStyle = gp; c.fillRect(0, 0, g.width, g.height); } else { c.fillStyle = '#7cc95a'; c.fillRect(0, 0, g.width, g.height); }
-    const vg = c.createRadialGradient(g.width / 2, g.height / 2, g.height * 0.2, g.width / 2, g.height / 2, g.height * 0.75); vg.addColorStop(0, 'rgba(255,255,230,0.10)'); vg.addColorStop(1, 'rgba(20,60,10,0.25)');
-    c.fillStyle = vg; c.fillRect(0, 0, g.width, g.height);
-    c.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
-    for (const o of placeScenery()) {
-      c.save(); c.translate(o.x, o.y);
-      c.fillStyle = 'rgba(20,50,10,0.22)'; c.beginPath(); c.ellipse(o.w * 0.06, o.h * 0.08, o.w * 0.46, o.h * 0.44, 0, 0, Math.PI * 2); c.fill();
-      c.rotate(o.rot); c.drawImage(ART.img[o.k], -o.w / 2, -o.h / 2, o.w, o.h); c.restore();
-    }
-    ground = g;
-  }
   function drawGround(c) {
-    const key = (S ? S.level : 0) + ':' + cv.width + 'x' + cv.height + ':' + view.u.toFixed(2);
-    if (key !== groundKey || !ground) { buildGround(); groundKey = key; }
+    const key = cv.width + 'x' + cv.height;
+    if (key !== groundKey || !ground) {
+      ground = document.createElement('canvas'); ground.width = cv.width; ground.height = cv.height;
+      const g = ground.getContext('2d'), im = ART.img[view.w > view.h ? 'bg_landscape' : 'bg_portrait'];
+      g.fillStyle = '#8fbd54'; g.fillRect(0, 0, ground.width, ground.height);
+      if (im) { const sc = Math.max(ground.width / im.width, ground.height / im.height); const w = im.width * sc, h = im.height * sc; g.imageSmoothingQuality = 'high'; g.drawImage(im, (ground.width - w) / 2, 0, w, h); }
+      groundKey = key;
+    }
     c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(ground, 0, 0); c.restore();
   }
   function tracePath(c) { c.beginPath(); lay.pts.forEach((p, i) => { const q = toPx(p.x, p.y); i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y); }); c.closePath(); }
   function drawTrack(c) {
     const u = view.u;
     c.save(); c.lineJoin = 'round'; c.lineCap = 'round';
+    const gp = ART.pattern(c, 'grass', u, 6);
+    tracePath(c); c.fillStyle = gp || '#7cc95a'; c.fill();
     tracePath(c); c.strokeStyle = 'rgba(60,40,10,0.35)'; c.lineWidth = u * 1.32; c.stroke();
     tracePath(c); c.strokeStyle = '#b98d55'; c.lineWidth = u * 1.2; c.stroke();
     const dp = ART.pattern(c, 'dirt', u, 5);
@@ -401,20 +412,21 @@
     for (const a of list) {
       const d = disp.get(a.id); if (!d) continue;
       const q = toPx(d.x, d.y);
+      if (a.k === G.WILD) { ART.drawWild(c, q.x, q.y, u * 1.06, time + a.id); continue; }
       const fl = flips[a.id]; const ft = fl != null ? (time - fl) / 0.3 : 2;
       if (a.mystery || ft < 0.5) { ART.drawMystery(c, q.x, q.y, u, a.mystery ? 1 : Math.max(0, 1 - ft * 2)); if (a.mystery) continue; }
       let rot = d.rot, sx = 0, sc = 1;
       if (d.mode === 'track') { rot += Math.sin(time * (S.zoom ? 26 : 13) + d.phase) * 0.16; sx = Math.sin(time * 13 + d.phase) * 0.05; }
       if (ft < 1) sc = Math.max(0.01, (ft - 0.5) * 2);
       if (d.squash != null && time - d.squash < 0.25) sx += Math.sin((time - d.squash) / 0.25 * Math.PI) * 0.2;
-      ART.drawAnimal(c, a.k, q.x, q.y, u * 0.98, rot, { dpr: view.dpr, sx, scale: sc });
+      ART.drawAnimal(c, a.k, q.x, q.y, u * 1.06, rot, { dpr: view.dpr, sx, scale: sc });
     }
   }
   function frame(tms) {
     if (cv.clientWidth && (Math.abs(cv.clientWidth - view.w) > 0.5 || Math.abs(cv.clientHeight - view.h) > 0.5)) resize();
     const now = tms / 1000; const rdt = Math.min(0.05, now - (time || now)); time = now;
     if (S && lay) {
-      if (!modalOpen || S.status !== 'play') {
+      if ((!modalOpen && !wildPick) || S.status !== 'play') {
         let left = rdt * speed;
         while (left > 1e-6) { const dt = Math.min(0.03, left); left -= dt; handle(G.step(S, dt)); }
       }
@@ -428,6 +440,7 @@
       drawTrack(ctx);
       for (const B of S.barns) drawBarn(ctx, B);
       drawAnimals(ctx, 'barn');
+      if (wildPick) for (const B of S.barns) if (!G.wildTarget(S, B.id)) { const p = cellPos(B, B.cells.length - 1), q = toPx(p.x - 0.5, p.y); ctx.save(); ctx.strokeStyle = '#fff'; ctx.shadowColor = '#c355ff'; ctx.shadowBlur = 12; ctx.lineWidth = Math.max(2, view.u * 0.07); rr(ctx, q.x - view.u * 0.55, q.y - view.u * 0.55, view.u * 2.1, view.u * 1.1, view.u * 0.2); ctx.stroke(); ctx.restore(); }
       for (const B of S.barns) drawFence(ctx, B);
       // exhaust puffs under the parade
       const u = view.u;
@@ -462,7 +475,7 @@
 
   // ---------- test hooks ----------
   window.__bp = {
-    get S() { return S; }, get lv() { return lv; }, get save() { return save; },
+    get wildPick() { return wildPick; }, get S() { return S; }, get lv() { return lv; }, get save() { return save; },
     get modal() { return modalOpen ? $('#m-title').textContent : null; },
     get loading() { return !$('#loading').classList.contains('hidden'); },
     get settled() { return !!S && !S.barns.some((B) => B.queue.length) && (!S.track.length || !G.anyParkable(S)); },

@@ -26,6 +26,7 @@
   const ri = (r, a, b) => a + Math.floor(r() * (b - a + 1));
   function shuffle(r, arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   const clone = (o) => JSON.parse(JSON.stringify(o));
+  const WILD = -2;
   const mod = (a, n) => ((a % n) + n) % n;
 
   function levelParams(level) {
@@ -43,7 +44,8 @@
   // Barns stand above and below a rounded rectangular loop. Top barns open downward onto the top lane,
   // bottom barns open upward onto the bottom lane. Extra (power-up) barns sit inside the loop.
   const BARN_W = 2.3, BARN_H = CAP / 2 + 0.35, STEP = 2.45, LANE = 1.1, MID = 2.9, RC = 0.9;
-  function makeLayout(nBarns) {
+  function makeLayout(nBarns, wide) {
+    const BARN_W = wide ? 4.3 : 2.3, BARN_H = wide ? CAP / 4 + 0.35 : CAP / 2 + 0.35, STEP = wide ? 4.45 : 2.45;
     const nt = Math.ceil(nBarns / 2), nb = nBarns - nt;
     const per = Math.max(nt, nb);
     const W = per * STEP + 0.6;
@@ -67,9 +69,9 @@
     // barns listed in loop order: top left->right, then bottom right->left
     const temps = [];
     const th = C.TEMP_BARN_CAP / 2 + 0.35;
-    for (let i = 0; i < C.TEMP_BARN_MAX; i++) { const x = xl + 1.4 + i * STEP; temps.push({ x, y: yT + LANE / 2 + 0.12, w: BARN_W, h: th, side: 'bottom', dock: project(x + BARN_W / 2, yT) + 0.02 }); }
+    for (let i = 0; i < C.TEMP_BARN_MAX; i++) { const x = xl + 1.4 + i * 2.45; temps.push({ x, y: yT + LANE / 2 + 0.12, w: 2.3, h: th, side: 'bottom', dock: project(x + 1.15, yT) + 0.02 }); }
     const sign = { x: xr - 2.2, y: (yT + yB) / 2 };
-    return { W, H, yT, yB, xl, xr, pts, segs, L, barns, temps, sign };
+    return { W, H, wide: !!wide, cols: wide ? 4 : 2, yT, yB, xl, xr, pts, segs, L, barns, temps, sign };
   }
   function pointAt(lay, s) {
     s = mod(s, lay.L);
@@ -81,19 +83,46 @@
 
   // ---------- rules on a compact board (used by generator, solver and tests) ----------
   // board = { cells: [[k,...] bottom->top], cap: [16..], preset: [k|null], n } ; barns are in loop order
-  function topRun(cells) { const n = cells.length; if (!n) return { k: -1, run: 0 }; const k = cells[n - 1]; let r = 0; for (let i = n - 1; i >= 0 && cells[i] === k; i--) r++; return { k, run: r }; }
+  // WILD (-2) = an unclaimed wild animal; wild cells are only ever at the front of a barn.
+  // The front group = any wild cells plus the run of one color behind them (the wilds leave as that color).
+  function topRun(cells) {
+    let i = cells.length - 1, w = 0; while (i >= 0 && cells[i] === WILD) { w++; i--; }
+    if (i < 0) return { k: w ? WILD : -1, run: 0, w };
+    const k = cells[i]; let r = 0; while (i >= 0 && cells[i] === k) { r++; i--; }
+    return { k, run: r + w, w };
+  }
   // Where may a parading animal of kind k park?
   //  - if some barn is designated for k: ONLY that barn (when its front is k, or it is empty) - never empty or extra barns
   //  - otherwise: a barn whose front is k (with room), and an empty undesignated barn only when no such home exists
+  //  - wild front: anyone without a matching barn (wild beats empty barns)
+  function frontWith(board, k) { for (let i = 0; i < board.cells.length; i++) { const d = board.cells[i]; if (d.length && d.length < board.cap[i] && board.preset[i] == null && d[d.length - 1] === k) return true; } return false; }
   function canPark(board, b, k) {
     const c = board.cells[b]; if (c.length >= board.cap[b]) return false;
     if (board.preset.indexOf(k) >= 0) return board.preset[b] === k && (!c.length || c[c.length - 1] === k);
     if (board.preset[b] != null) return false;
-    if (c.length) return c[c.length - 1] === k;
-    for (let i = 0; i < board.cells.length; i++) { const d = board.cells[i]; if (d.length && d.length < board.cap[i] && board.preset[i] == null && d[d.length - 1] === k) return false; }
+    const top = c.length ? c[c.length - 1] : null;
+    if (top === k) return true;
+    if (frontWith(board, k)) return false;
+    if (top === WILD) return true;
+    if (top != null) return false;
+    return !frontWith(board, WILD);
+  }
+  function parkCompact(cells, k) { for (let i = cells.length - 1; i >= 0 && cells[i] === WILD; i--) cells[i] = k; cells.push(k); }
+  function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP || cells[0] < 0) return false; for (const x of cells) if (x !== cells[0]) return false; return true; }
+  // A color is done when its animals not in full barns of 16 all sit together in one single-color barn.
+  // (Without wild animals every color has exactly 16, so this is the same as "every barn holds 16 of one kind".)
+  function boardWon(board, circ) {
+    if (circ && Object.keys(circ).length) return false;
+    const loose = {}, where = {}, total = {};
+    board.cells.forEach((c, i) => { for (const x of c) if (x >= 0) total[x] = (total[x] || 0) + 1; if (isCleared(c, board.cap[i])) return; for (const x of c) if (x >= 0) loose[x] = (loose[x] || 0) + 1; });
+    for (let i = 0; i < board.cells.length; i++) {
+      const c = board.cells[i]; if (!c.length || isCleared(c, board.cap[i])) continue;
+      if (c.every((x) => x === WILD)) continue;
+      const k = c[0]; if (k < 0 || !c.every((x) => x === k) || c.length !== loose[k] || total[k] === CAP || where[k] != null) return false;
+      where[k] = i;
+    }
     return true;
   }
-  function isCleared(cells, cap) { if (cells.length !== CAP || cap !== CAP) return false; for (const x of cells) if (x !== cells[0]) return false; return true; }
   // One tap on the compact board. circ = {kind: count} of animals left circling (nowhere to park yet).
   // Only barn X changes when you tap it, so the result is the same however the parade is spaced, as long as
   // the tap does not make an empty barn wanted by two different colors (the solver skips those ambiguous taps).
@@ -120,18 +149,18 @@
         if (canPark(nb, t, d)) {
           // a home filled up mid-group and the rest would fall back to an empty barn: in the live parade that
           // depends on spacing (they may already be past it), so the solver avoids these taps
-          if (!nb.cells[t].length && usedHome) return null;
-          if (nb.cells[t].length) usedHome = true;
-          nb.cells[t].push(d); placed = true; break;
+          const tc = nb.cells[t], home = tc.length && tc[tc.length - 1] === d;
+          if (!home && usedHome) return null;
+          if (home) usedHome = true;
+          parkCompact(tc, d); placed = true; break;
         }
       }
       if (!placed) break; left--;
     }
     if (left) nc[d] = (nc[d] || 0) + left;
-    for (const c of Object.keys(nc)) { while (nc[c] > 0 && canPark(nb, X, +c)) { nb.cells[X].push(+c); nc[c]--; } if (!nc[c]) delete nc[c]; }
+    for (const c of Object.keys(nc)) { while (nc[c] > 0 && canPark(nb, X, +c)) { parkCompact(nb.cells[X], +c); nc[c]--; } if (!nc[c]) delete nc[c]; }
     return { board: nb, circ: nc };
   }
-  function boardWon(board, circ) { return (!circ || !Object.keys(circ).length) && board.cells.every((c, i) => !c.length || isCleared(c, board.cap[i])); }
   const boardKey = (board, circ) => board.cells.map((c) => c.join('.')).join('|') + '#' + Object.keys(circ || {}).sort().map((k) => k + ':' + circ[k]).join(',');
 
   // Depth-first search with a greedy move order for a win with no power-ups.
@@ -227,45 +256,67 @@
       tempUsed: 0,
     };
     S.nextId = nextId;
-    S.barns.forEach((B) => { B.cleared = isCleared(B.cells.map((a) => a.k), B.cap); });
+    recomputeCleared(S, null);
     S.layoutRef = lv.layout;
     revealFront(S, null);
     return S;
   }
   const trackCount = (S) => S.track.length + S.barns.reduce((a, B) => a + B.queue.length, 0);
+  function liveFrontWith(bs, k) { for (const X of bs) { const d = X.cells; if (d.length && d.length < X.cap && X.preset == null && d[d.length - 1].k === k) return true; } return false; }
   function barnCanPark(B, k, S) {
     const c = B.cells; if (c.length >= B.cap) return false;
     const bs = S ? S.barns : [B];
     if (bs.some((X) => X.preset === k)) return B.preset === k && (!c.length || c[c.length - 1].k === k);
     if (B.preset != null) return false;
-    if (c.length) return c[c.length - 1].k === k;
-    for (const X of bs) { const d = X.cells; if (d.length && d.length < X.cap && X.preset == null && d[d.length - 1].k === k) return false; }
-    return true;
+    const top = c.length ? c[c.length - 1].k : null;
+    if (top === k) return true;
+    if (liveFrontWith(bs, k)) return false;
+    if (top === WILD) return true;
+    if (top != null) return false;
+    return !liveFrontWith(bs, WILD);
+  }
+  // recompute which barns are done (full of 16, or holding every remaining animal of its color); emits clear/unclear
+  function recomputeCleared(S, ev) {
+    const full = (B) => !B.temp && isCleared(B.cells.map((a) => a.k), B.cap);
+    const loose = {};
+    const add = (a) => { if (a.k >= 0) loose[a.k] = (loose[a.k] || 0) + 1; };
+    for (const B of S.barns) { if (!full(B)) B.cells.forEach(add); B.queue.forEach(add); }
+    S.track.forEach(add);
+    for (const B of S.barns) {
+      let now = false;
+      if (!B.temp && B.cells.length) {
+        if (full(B)) now = true;
+        else { const k = B.cells[0].k; now = k >= 0 && S.wildKinds && S.wildKinds[k] && B.cells.every((a) => a.k === k) && B.cells.length === loose[k] && !B.queue.length; }
+      }
+      if (now && !B.cleared && ev) ev.push({ type: 'clear', barn: B.id, k: B.cells[0].k });
+      if (!now && B.cleared && ev) ev.push({ type: 'unclear', barn: B.id });
+      B.cleared = now;
+    }
   }
   // the front pair (row nearest the track) is never a mystery
   function revealFront(S, ev) {
     for (const B of S.barns) {
       const c = B.cells; if (!c.length) continue;
-      const row = Math.floor((c.length - 1) / 2); let from = row * 2; if (c.length - from < 2) from = Math.max(0, from - 1);
+      const n = B.temp ? 2 : (S.frontN || 2), row = Math.floor((c.length - 1) / n); const from = Math.max(0, Math.min(row * n, c.length - 2));
       for (let i = from; i < c.length; i++) if (c[i].mystery) { c[i].mystery = false; S.revealed[c[i].id] = 1; if (ev) ev.push({ type: 'reveal', barn: B.id, id: c[i].id }); }
     }
   }
-  function frontGroup(B) { const c = B.cells; if (!c.length) return { k: -1, run: 0 }; const k = c[c.length - 1].k; let r = 0; for (let i = c.length - 1; i >= 0 && c[i].k === k; i--) r++; return { k, run: r }; }
+  function frontGroup(B) { return topRun(B.cells.map((a) => a.k)); }
   function snapshot(S) { const { history, layoutRef, ...rest } = S; return clone(rest); }
   function pushHistory(S) { S.history.push(snapshot(S)); if (S.history.length > 60) S.history.shift(); }
   function tap(S, b) {
     const B = S.barns[b];
     if (!B || S.status !== 'play') return { ok: false, why: 'over' };
     const { k, run } = frontGroup(B);
-    if (!run) return { ok: false, why: 'empty' };
+    if (!run) return { ok: false, why: k === WILD ? 'wild' : 'empty' };
     const room = S.cap - trackCount(S);
     const n = Math.min(run, room);
     if (n <= 0) return { ok: false, why: 'full' };
     pushHistory(S);
     const out = [];
-    for (let j = 0; j < n; j++) { const a = B.cells.pop(); const wasMystery = a.mystery; a.mystery = false; S.revealed[a.id] = 1; B.queue.push(a); out.push({ id: a.id, wasMystery }); }
+    for (let j = 0; j < n; j++) { const a = B.cells.pop(); const wasMystery = a.mystery; a.mystery = false; S.revealed[a.id] = 1; if (a.k === WILD) { a.k = k; (S.wildKinds = S.wildKinds || {})[k] = 1; } B.queue.push(a); out.push({ id: a.id, wasMystery }); }
     const events = [{ type: 'exit', barn: b, k, n, split: n < run, animals: out }];
-    if (B.cleared) { B.cleared = false; events.push({ type: 'unclear', barn: b }); }
+    recomputeCleared(S, events);
     S.moves++;
     revealFront(S, events);
     return { ok: true, n, k, split: n < run, events };
@@ -314,12 +365,12 @@
           parked.add(a.id);
           const top = hit.cells[hit.cells.length - 1];
           if (top && top.mystery) { top.mystery = false; S.revealed[top.id] = 1; ev.push({ type: 'reveal', barn: hit.id, id: top.id }); }
+          for (let j = hit.cells.length - 1; j >= 0 && hit.cells[j].k === WILD; j--) { hit.cells[j].k = a.k; (S.wildKinds = S.wildKinds || {})[a.k] = 1; ev.push({ type: 'claim', barn: hit.id, id: hit.cells[j].id, k: a.k }); }
           delete a.s; delete a.from; hit.cells.push(a);
           ev.push({ type: 'park', id: a.id, barn: hit.id, k: a.k });
-          if (!hit.temp && isCleared(hit.cells.map((x) => x.k), hit.cap)) { hit.cleared = true; ev.push({ type: 'clear', barn: hit.id, k: a.k }); }
         }
       }
-      if (parked.size) S.track = tr.filter((a) => !parked.has(a.id));
+      if (parked.size) { S.track = tr.filter((a) => !parked.has(a.id)); recomputeCleared(S, ev); }
     }
     updateStatus(S, ev);
     return ev;
@@ -330,7 +381,7 @@
     // zoom when every barn is single-colored and every parading animal has a home waiting
     S.zoom = !queued && S.track.length > 0 && S.barns.every((B) => !B.cells.length || B.cells.every((a) => a.k === B.cells[0].k)) &&
       S.track.every((a) => S.barns.some((B) => barnCanPark(B, a.k, S))) && S.barns.every((B) => !B.temp || !B.cells.length);
-    if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
+    if (!S.track.length && !queued && S.barns.every((B) => !B.cells.length || (B.temp ? false : B.cleared || B.cells.every((a) => a.k === WILD)))) { S.status = 'won'; if (ev) ev.push({ type: 'won' }); return; }
     if (!queued && trackCount(S) >= S.cap && !anyParkable(S)) { S.status = 'lost'; S.reason = 'full'; if (ev) ev.push({ type: 'lost' }); }
   }
   // Settle: run the parade until nothing changes (all parked, or animals circling with nowhere to go)
@@ -361,7 +412,7 @@
   function magnet(S, r) {
     // remove every animal of one random color that is not already sorted away
     const kinds = new Set();
-    for (const B of S.barns) for (const a of B.cells.concat(B.queue)) if (!B.cleared) kinds.add(a.k);
+    for (const B of S.barns) for (const a of B.cells.concat(B.queue)) if (!B.cleared && a.k >= 0) kinds.add(a.k);
     for (const a of S.track) kinds.add(a.k);
     const list = [...kinds]; if (!list.length) return null;
     const k = list[Math.floor((r || Math.random)() * list.length)];
@@ -370,7 +421,8 @@
     for (const B of S.barns) { B.cells = B.cells.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); B.queue = B.queue.filter((a) => (a.k === k ? (gone.push({ id: a.id, barn: B.id }), false) : true)); }
     S.track = S.track.filter((a) => (a.k === k ? (gone.push({ id: a.id, s: a.s }), false) : true));
     S.removed.push(k); S.used++; revealFront(S, null);
-    for (const B of S.barns) { if (B.preset === k) B.preset = null; B.cleared = !B.temp && isCleared(B.cells.map((x) => x.k), B.cap); }
+    for (const B of S.barns) if (B.preset === k) B.preset = null;
+    recomputeCleared(S, null);
     if (S.status === 'lost') { S.status = 'play'; S.reason = null; }
     updateStatus(S, null);
     return { k, gone };
@@ -381,29 +433,29 @@
     S.barns.push(B); return B;
   }
   function addTempBarn(S) { const B = addTempBarnRaw(S); if (!B) return null; S.used++; if (S.status === 'lost') { S.status = 'play'; S.reason = null; } return B; }
-  function shuffleColors(S, r) {
-    // re-deal the animals of every unsorted barn in pairs, keeping each barn's count; tries for a deal the solver can finish
-    r = r || Math.random;
-    const bs = S.barns.filter((B) => !B.cleared && !B.temp && B.cells.length);
-    if (!bs.length) return false;
+  // Wild: the front pair of a regular, undesignated barn turns wild. Anyone without a matching barn may park on it
+  // (claiming it as their color, counting toward that barn's 16); tapped out, the wilds leave as the group behind them.
+  function wildTarget(S, b) {
+    const B = S.barns[b];
+    if (!B || B.temp) return 'temp';
+    if (B.preset != null) return 'designated';
+    if (!B.cells.length) return 'empty';
+    if (B.cleared && B.cells.length === B.cap) return 'full';
+    const c = B.cells; if (c[c.length - 1].k === WILD) return 'already';
+    return null;
+  }
+  function makeWild(S, b) {
+    if (S.status === 'won' || wildTarget(S, b)) return null;
     pushHistory(S);
-    const pool = []; for (const B of bs) pool.push(...B.cells);
-    const byK = {}; for (const a of pool) (byK[a.k] = byK[a.k] || []).push(a);
-    let best = null;
-    for (let tryN = 0; tryN < 12; tryN++) {
-      const chunks = []; for (const k of Object.keys(byK)) { const arr = byK[k].slice(); for (let i = 0; i < arr.length; i += 2) chunks.push(arr.slice(i, i + 2)); }
-      shuffle(r, chunks); const flat = [].concat(...chunks);
-      let p = 0; const deal = bs.map((B) => { const n = B.cells.length; const c = flat.slice(p, p + n); p += n; return c; });
-      best = deal;
-      if (!S.track.length && !S.barns.some((B) => B.queue.length)) {
-        const board = { cells: S.barns.map((B) => { const j = bs.indexOf(B); return (j >= 0 ? deal[j] : B.cells).map((a) => a.k); }), cap: S.barns.map((B) => B.cap), preset: S.barns.map((B) => B.preset) };
-        if (solve(board, 3000).ok) break;
-      } else break;
-    }
-    bs.forEach((B, j) => { B.cells = best[j]; });
-    revealFront(S, null);
+    const B = S.barns[b], c = B.cells;
+    const from = Math.max(0, c.length - 2);
+    const ids = [];
+    S.wildKinds = S.wildKinds || {};
+    for (let i = from; i < c.length; i++) { S.wildKinds[c[i].k] = 1; c[i].orig = c[i].orig != null ? c[i].orig : c[i].k; c[i].k = WILD; c[i].wild = true; c[i].mystery = false; S.revealed[c[i].id] = 1; ids.push(c[i].id); }
     S.used++;
-    return true;
+    if (S.status === 'lost') { S.status = 'play'; S.reason = null; }
+    recomputeCleared(S, null); updateStatus(S, null);
+    return { barn: b, ids };
   }
 
   function rewardFor(level) {
@@ -419,6 +471,6 @@
   return {
     KINDS, CONFIG: C, mulberry32, levelParams, makeLayout, pointAt, topRun, canPark, isCleared, tapBoard, boardWon, solve, replay,
     genAttempt, generateLevel, newGame, tap, step, settle, trackCount, barnCanPark, frontGroup, redo, plus2, magnet, addTempBarn,
-    shuffleColors, setSolverWeights, revealFront, liveCheck, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
+    WILD, wildTarget, makeWild, recomputeCleared, setSolverWeights, revealFront, liveCheck, rewardFor, starsFor, boardOf, updateStatus, anyParkable,
   };
 });

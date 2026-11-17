@@ -12,11 +12,11 @@
   };
   // floor colors for color-locked barns: the animal's color, deep enough to stand out from plain wood
   const FLOOR = { pig: '#e8588f', chick: '#e9ab00', sheep: '#e9dfc2', frog: '#35a032', duck: '#2f86d6', cow: '#3a1a0b', bunny: '#6f7a88', hen: '#e05a12', blacksheep: '#24262c', goat: '#8a5ad0' };
-  const SCENERY = ['tree', 'pond', 'garden', 'bush', 'hay', 'flowers'];
+
   const img = {};
   const kname = (k) => (typeof k === 'number' ? KINDS[k] : k);
   function load(onProgress) {
-    const list = KINDS.map((k) => [k, 'assets/' + k + '.webp']).concat([['grass', 'assets/grass.jpg'], ['dirt', 'assets/dirt.jpg'], ['wood', 'assets/wood.jpg'], ['fence', 'assets/fence.webp']]).concat(SCENERY.map((k) => [k, 'assets/sc_' + k + '.webp']));
+    const list = KINDS.map((k) => [k, 'assets/' + k + '.webp']).concat([['grass', 'assets/grass.jpg'], ['dirt', 'assets/dirt.jpg'], ['wood', 'assets/wood.jpg'], ['fence', 'assets/fence.webp']]).concat(['bg_portrait', 'bg_landscape'].map((k) => [k, 'assets/' + k + '.webp']));
     let done = 0;
     return Promise.all(list.map(([key, src]) => new Promise((res) => {
       const im = new Image(); im.onload = () => { img[key] = im; done++; onProgress && onProgress(done / list.length); res(); };
@@ -66,6 +66,17 @@
     }
     c.restore();
   }
+  function drawWild(c, x, y, px, t) {
+    c.save(); c.translate(x, y);
+    c.shadowColor = '#8a3bd1'; c.shadowBlur = px * 0.1;
+    const g = c.createLinearGradient(-px / 2, -px / 2, px / 2, px / 2);
+    ['#ff698f','#ffb83b','#fff47b','#69dc99','#69cfff','#b78aff'].forEach((col, i) => g.addColorStop(i / 5, col));
+    c.fillStyle = g; c.beginPath(); c.ellipse(0, 0, px * 0.35, px * 0.45, 0, 0, Math.PI * 2); c.fill();
+    c.shadowBlur = 0; c.strokeStyle = '#fff9'; c.lineWidth = px * 0.06; c.stroke();
+    c.fillStyle = '#fff';
+    for (let i = 0; i < 3; i++) { const a = t * 1.2 + i * 2.1, sx = Math.cos(a) * px * 0.29, sy = Math.sin(a) * px * 0.35, r = px * (0.08 + 0.025 * Math.sin(t * 4 + i)); c.beginPath(); c.moveTo(sx,sy-r); c.lineTo(sx+r*0.3,sy-r*0.3); c.lineTo(sx+r,sy); c.lineTo(sx+r*0.3,sy+r*0.3); c.lineTo(sx,sy+r); c.lineTo(sx-r*0.3,sy+r*0.3); c.lineTo(sx-r,sy); c.lineTo(sx-r*0.3,sy-r*0.3); c.closePath(); c.fill(); }
+    c.restore();
+  }
   const patterns = {};
   function pattern(c, key, unitPx, tileUnits) {
     const im = img[key]; if (!im) return null;
@@ -74,5 +85,5 @@
     if (!p) { const sz = Math.max(32, Math.round(unitPx * tileUnits)); const cv = document.createElement('canvas'); cv.width = cv.height = sz; const g = cv.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(im, 0, 0, sz, sz); p = { cv, sz }; patterns[k] = p; }
     return c.createPattern(p.cv, 'repeat');
   }
-  root.BPArt = { KINDS, INFO, FLOOR, SCENERY, img, load, drawAnimal, drawMystery, pattern, rr, kname };
+  root.BPArt = { KINDS, INFO, FLOOR, img, load, drawWild, drawAnimal, drawMystery, pattern, rr, kname };
 })(this);

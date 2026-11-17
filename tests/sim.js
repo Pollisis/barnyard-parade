@@ -17,6 +17,7 @@ for (let L = 1; L <= N; L++) {
     const R = G.newGame(lv);
     for (let f = 0; f < 4000 && R.status === 'play'; f++) {
       if (rnd() < 0.08) G.tap(R, Math.floor(rnd() * R.barns.length));
+      if (k === 2 && rnd() < 0.004) G.makeWild(R, Math.floor(rnd() * R.barns.length)); // third run also uses Wild
       const ev = G.step(R, 1 / 30);
       for (const e of ev) if (e.type === 'park') { const B = R.barns[e.barn]; const des = R.barns.find((X) => X.preset === e.k); if (des && des !== B) { fail++; console.log('FAIL designated animal parked elsewhere', L); } }
       if (R.barns.some((B) => B.cells.length && B.cells[B.cells.length - 1].mystery)) { fail++; console.log('FAIL hidden animal at a barn front', L); break; }

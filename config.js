@@ -1,7 +1,7 @@
 // Barnyard Parade: names and tuning knobs. Change GAME_NAME here to rename the game everywhere.
 (function (root) {
   const GAME_NAME = 'Barnyard Parade';
-  const VERSION = 3;
+  const VERSION = 4;
   const CONFIG = {
     // Core rules
     TRACK_CAPACITY: 16,       // animals allowed on the loop at once (the "x/16" sign)
@@ -9,7 +9,7 @@
     TEMP_BARN_CAP: 4,         // the "extra barn" power-up holds 4
     TEMP_BARN_MAX: 2,         // extra barns per level
     PLUS2_AMOUNT: 2,          // +2 power-up (stacks)
-    SPEED: 5.25,               // parade speed, cells per second
+    SPEED: 6.2,                // parade speed, cells per second
     ZOOM_SPEED: 3.2,          // speed multiplier when the last animals head home
     GAP: 1.0,                 // spacing between parading animals, in cells
 
@@ -37,8 +37,8 @@
     GEN_MAX_TRIES: 150,
 
     // Power-ups: free, earned by playing, banked across levels (no store, ads, lives)
-    START_BANK: { redo: 3, shuffle: 1, plus2: 1, magnet: 1, barn: 1 },
-    REWARD_ROTATION: ['redo', 'plus2', 'barn', 'shuffle', 'redo', 'magnet'],
+    START_BANK: { redo: 3, wild: 1, plus2: 1, magnet: 1, barn: 1 },
+    REWARD_ROTATION: ['redo', 'plus2', 'barn', 'wild', 'redo', 'magnet'],
     BUNDLE_EVERY: 5,          // every Nth level also gives +1 of each
     BANK_MAX: 99,
 
